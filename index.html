@@ -359,7 +359,7 @@ const PREF_PATH = {
   "福岡県":"kyushu/p-fukuoka","長崎県":"kyushu/p-nagasaki","熊本県":"kyushu/p-kumamoto","大分県":"kyushu/p-oita",
   "宮崎県":"kyushu/p-miyazaki","鹿児島県":"kyushu/p-kagoshima","沖縄県":"kyushu/p-okinawa",
 };
-const BRANDS = ["PREMIUM","TKP","fabbit","CIRQ","cabin","その他"];
+const BRANDS = ["PREMIUM","TKP","fabbit","CIRQ","その他"];
 
 /* ── プロキシ層 ── */
 /* プロキシ層。Cloudflare(workers.dev/pages.dev)配下では、同梱の自前Workerプロキシ
@@ -429,7 +429,6 @@ function brandOf(name){
   if(/PREMIUM/i.test(name)) return "PREMIUM";
   if(/fabbit/i.test(name)) return "fabbit";
   if(/CIRQ/i.test(name)) return "CIRQ";
-  if(/cabin/i.test(name)) return "cabin";
   if(/TKP/.test(name)) return "TKP";
   return "その他";
 }
@@ -1038,20 +1037,21 @@ function _loadImgViaProxy(purl){
     let done=false;
     const img = new Image(); img.crossOrigin = "anonymous";
     img.onload = ()=>{ if(done) return; done=true;
-      try{ const cv=document.createElement("canvas"); cv.width=img.naturalWidth; cv.height=img.naturalHeight; cv.getContext("2d").drawImage(img,0,0); resolve(cv.toDataURL("image/jpeg",0.85)); }
+      try{ const cv=document.createElement("canvas"); cv.width=img.naturalWidth; cv.height=img.naturalHeight; cv.getContext("2d").drawImage(img,0,0); resolve({data:cv.toDataURL("image/jpeg",0.85), w:img.naturalWidth, h:img.naturalHeight}); }
       catch(e){ reject(e); } };
     img.onerror = ()=>{ if(done) return; done=true; reject(new Error("imgerr")); };
     setTimeout(()=>{ if(done) return; done=true; reject(new Error("timeout")); }, 12000);
     img.src = purl;
   });
 }
-async function imgToDataURL(url){
+async function imgToDataURLSized(url){
   for(let i=0;i<PROXIES.length && i<4;i+=2){
     const group = PROXIES.slice(i,i+2).map(mk=>_loadImgViaProxy(mk(url)));
     try{ return await Promise.any(group); }catch(e){}
   }
   return null;
 }
+async function imgToDataURL(url){ const r = await imgToDataURLSized(url); return r ? r.data : null; }
 
 /* Google Maps embed の緯度経度から OSM タイルを合成した静的地図画像を生成
    （提案ページ・PPTXで共通利用。scraper.download_map_image のJS移植） */
@@ -1102,12 +1102,14 @@ async function ensureMapImg(d){
   d.mapImg = img || null;
   return d.mapImg;
 }
-/* PPTX用: 地図をJPEG dataURLで返す（URL(webp)ならcanvasでJPEG化） */
-async function mapImgForPPTX(d){
+/* PPTX用: 地図を {data,w,h}（実寸付き）で返す。URL(webp)ならcanvasでJPEG化 */
+async function mapSizedForPPTX(d){
   const mi = await ensureMapImg(d);
   if(!mi) return null;
-  if(mi.indexOf("data:")===0) return mi;
-  return await imgToDataURL(mi);
+  if(mi.indexOf("data:")===0){
+    return await new Promise(res=>{ const im=new Image(); im.onload=()=>res({data:mi,w:im.naturalWidth||760,h:im.naturalHeight||360}); im.onerror=()=>res({data:mi,w:760,h:360}); im.src=mi; });
+  }
+  return await imgToDataURLSized(mi);
 }
 let _onestopData;
 async function onestopDataURL(){
@@ -1186,31 +1188,37 @@ async function exportPPTX(){
       s.addText(String(i+1).padStart(2,"0"),{x:0.55,y:0.4,w:0.9,h:0.7,fontSize:26,color:GOLD,fontFace:HEAD,bold:true});
       s.addText(d.name,{x:1.4,y:0.46,w:11.4,h:0.7,fontSize:22,color:INK,fontFace:HEAD,bold:true});
       const subline = [d.brand||"", (d.station?"｜  "+(d.station||"").split("\n")[0]:""), (d.maxCap?"｜  最大 "+d.maxCap+"名":"")].filter(Boolean).join("　");
-      s.addText(subline,{x:1.42,y:1.1,w:11.4,h:0.35,fontSize:11,color:GRAY,fontFace:BODY});
-      /* 左：写真＋地図 */
-      const imgData = d.images.length ? await imgToDataURL(d.images[0]+"?w=1100&h=760&fit=crop&fm=jpg") : null;
-      if(imgData) s.addImage({data:imgData,x:0.55,y:1.65,w:5.65,h:3.05,sizing:{type:"cover",w:5.65,h:3.05}});
-      else s.addShape(pptx.ShapeType.rect,{x:0.55,y:1.65,w:5.65,h:3.05,fill:{color:"F0EEE7"}});
-      const mapData = await mapImgForPPTX(d);
-      if(mapData) s.addImage({data:mapData,x:0.55,y:4.85,w:5.65,h:2.0,sizing:{type:"cover",w:5.65,h:2.0}});
-      /* 右：紹介＋設備＋住所＋会議室 */
-      const rx = 6.5, rw = 6.3;
-      let ry = 1.65;
-      if(d.description){ s.addText(d.description,{x:rx,y:ry,w:rw,h:1.15,fontSize:9.5,color:GRAY,fontFace:BODY,valign:"top",lineSpacingMultiple:1.15}); ry += 1.2; }
-      if(d.features && d.features.length){ s.addText(d.features.slice(0,6).join("　・　"),{x:rx,y:ry,w:rw,h:0.35,fontSize:9,color:GOLD,fontFace:BODY,valign:"top"}); ry += 0.4; }
-      if(d.address){ s.addText([{text:"▸ ",options:{color:RED}},{text:d.address,options:{color:GRAY}}],{x:rx,y:ry,w:rw,h:0.45,fontSize:9,fontFace:BODY,valign:"top"}); ry += 0.5; }
+      s.addText(subline,{x:1.42,y:1.12,w:11.4,h:0.35,fontSize:11,color:GRAY,fontFace:BODY});
+      /* 左：写真（16:9でクロップ・歪みなし）＋ 地図（元比率を保持してフィット） */
+      const LX=0.55, LW=5.7, PH=LW*720/1280;
+      const photo = d.images.length ? await imgToDataURL(d.images[0]+"?w=1280&h=720&fit=crop&fm=jpg") : null;
+      if(photo) s.addImage({data:photo,x:LX,y:1.6,w:LW,h:PH});
+      else s.addShape(pptx.ShapeType.rect,{x:LX,y:1.6,w:LW,h:PH,fill:{color:"F0EEE7"}});
+      const mapTop = 1.6+PH+0.22;
+      const map = await mapSizedForPPTX(d);
+      if(map && map.data && map.w && map.h){
+        const maxW=LW, maxH=7.0-mapTop;
+        let mw=maxW, mh=maxW*map.h/map.w;
+        if(mh>maxH){ mh=maxH; mw=maxH*map.w/map.h; }
+        s.addImage({data:map.data,x:LX,y:mapTop,w:mw,h:mh});
+      }
+      /* 右：要約紹介＋設備＋住所＋会議室（バランス調整） */
+      const rx=6.55, rw=6.25; let ry=1.6;
+      let sd=(d.description||"").split("。")[0]; if(sd.length>70) sd=sd.slice(0,70); if(sd) sd+="。";
+      if(sd){ s.addText(sd,{x:rx,y:ry,w:rw,h:0.75,fontSize:10,color:GRAY,fontFace:BODY,valign:"top",lineSpacingMultiple:1.2}); ry+=0.82; }
+      if(d.features && d.features.length){ s.addText(d.features.slice(0,5).join("　・　"),{x:rx,y:ry,w:rw,h:0.3,fontSize:9,color:GOLD,fontFace:BODY,valign:"top"}); ry+=0.38; }
+      if(d.address){ s.addText([{text:"▸ ",options:{color:RED}},{text:d.address,options:{color:GRAY}}],{x:rx,y:ry,w:rw,h:0.4,fontSize:9,fontFace:BODY,valign:"top"}); ry+=0.46; }
       const cols = LAYOUT_ORDER.filter(l=>chosen.some(r=>(r.caps[l]||0)>0)).slice(0,4);
-      s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":"（"+d.rooms.length+" 室）"),{x:rx,y:ry,w:rw,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true}); ry += 0.36;
+      s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":"（"+d.rooms.length+" 室）"),{x:rx,y:ry,w:rw,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true}); ry+=0.36;
       if(chosen.length){
         const th = ["会議室","面積"].concat(cols).concat(["料金/時"]).map(t=>({text:t,options:{bold:true,color:FAINT,fontSize:9,fontFace:BODY,fill:{color:"F4F2EC"},align:"center",valign:"middle"}}));
-        const rows = chosen.slice(0,7);
-        const bodyRows = rows.map(r=>[
+        const bodyRows = chosen.slice(0,7).map(r=>[
           {text:r.name,options:{color:INK,fontSize:9,fontFace:BODY,bold:true,valign:"middle"}},
           {text:r.area?r.area+"㎡":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}}
         ].concat(cols.map(c=>({text:(r.caps[c]||0)?r.caps[c]+"名":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}})))
          .concat([{text:roomPrice(r),options:{color:RED,fontSize:9,fontFace:BODY,align:"right",valign:"middle"}}]));
         s.addTable([th].concat(bodyRows),{x:rx,y:ry,w:rw,border:{type:"solid",color:LINE,pt:0.5},autoPage:false});
-        if(chosen.length>7) s.addText("ほか "+(chosen.length-7)+" 室",{x:rx,y:6.95,w:rw,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
+        if(chosen.length>7) s.addText("ほか "+(chosen.length-7)+" 室",{x:rx,y:7.0,w:rw,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
       } else s.addText("会議室情報を取得できませんでした",{x:rx,y:ry,w:rw,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
     }
 
