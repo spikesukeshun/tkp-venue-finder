@@ -151,6 +151,12 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .rooms td.pr{font-family:var(--serif);color:var(--accent);font-weight:600}
 .rooms tr:hover td{background:var(--surface)}
 .rooms-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius)}
+.rooms td.rmchk,.rooms th:first-child{text-align:center;width:40px}
+.rooms td.rmchk input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;margin:0}
+.roomsel-hint{font-size:11px;color:var(--ink-faint);margin:-4px 0 10px}
+.roomcap{font-size:11px;letter-spacing:.06em;color:var(--gold);margin-bottom:7px;font-weight:500}
+.acc-line{font-size:12px;color:var(--ink-soft);line-height:1.7}
+.acc .addr i{color:var(--accent);font-style:normal;margin-right:3px}
 .md-add{margin-top:8px}
 
 /* ── Comparison ── */
@@ -184,7 +190,8 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .venue-block .vn .num{font-family:var(--serif);color:var(--gold);font-size:26px}
 .venue-block .vn h2{font-size:24px;margin:0}
 .venue-block .vsub{font-size:13px;color:var(--ink-soft);margin-bottom:22px}
-.vgrid{display:grid;grid-template-columns:1.15fr 1fr;gap:26px;align-items:start}
+.vgrid{display:grid;grid-template-columns:1fr 1.1fr;gap:26px;align-items:start}
+.vgrid > div{min-width:0}
 .vgrid .photo{aspect-ratio:4/3;border-radius:var(--radius);overflow:hidden;background:var(--surface-2)}
 .vgrid .photo img{width:100%;height:100%;object-fit:cover}
 .vphotos{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
@@ -234,6 +241,7 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
       <span class="sub">VENUE FINDER ＆ PROPOSAL</span>
     </div>
     <div class="top-actions">
+      <button class="btn ghost hidden" id="pptBtn" title="選択内容をPowerPointで出力">📊 PPTX出力</button>
       <button class="btn ghost hidden" id="printBtn" title="提案書としてPDF/印刷">🖨 印刷 / PDF</button>
       <button class="btn ghost" id="shareBtn" title="この選択を共有URLにする">🔗 共有URL</button>
       <button class="btn primary" id="modeBtn" disabled>顧客共有モード</button>
@@ -305,6 +313,7 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
 <div class="toast" id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/pptxgenjs@3.12.0/dist/pptxgen.bundle.js"></script>
 <script>
 "use strict";
 /* ============================================================
@@ -836,15 +845,42 @@ function renderTray(){
   $("#trayN").textContent = arr.length;
   tray.classList.toggle("show", arr.length>0 && state.mode==="browse");
   $("#modeBtn").disabled = arr.length===0;
-  chips.innerHTML = arr.map(f=>'<span class="chip">'+esc(f.name)+'<button title="外す" onclick="toggleSelect(\''+esc(f.id).replace(/'/g,"\\'")+'\')">×</button></span>').join("");
+  chips.innerHTML = arr.map(f=>{
+    const rc = (f.rooms && f.rooms.size>0) ? ' <small style="color:var(--ink-faint)">('+f.rooms.size+'室)</small>' : '';
+    return '<span class="chip">'+esc(f.name)+rc+'<button title="外す" onclick="toggleSelect(\''+esc(f.id).replace(/'/g,"\\'")+'\')">×</button></span>';
+  }).join("");
+}
+function ensureSelected(id){
+  if(!state.selected.has(id)){
+    const f = state.results.find(x=>x.id===id) || {id, name:(detail.get(id)&&detail.get(id).name)||id, url:BASE+"/facilitys/"+id+"/", brand:"その他", station:""};
+    state.selected.set(id, {id:f.id, name:f.name, station:f.station, brand:f.brand, url:f.url, rooms:new Set()});
+  }
+  const s = state.selected.get(id);
+  if(!s.rooms) s.rooms = new Set();
+  return s;
 }
 function toggleSelect(id){
   if(state.selected.has(id)){ state.selected.delete(id); }
-  else{
-    const f = state.results.find(x=>x.id===id) || {id, name:(detail.get(id)&&detail.get(id).name)||id, url:BASE+"/facilitys/"+id+"/", brand:"その他", station:""};
-    state.selected.set(id, {id:f.id, name:f.name, station:f.station, brand:f.brand, url:f.url});
-  }
+  else{ ensureSelected(id); }
   render(); syncHash();
+}
+/* 必要な部屋の選択（空Set＝全室、部分選択で subset）。提案ページ・PPTXに反映 */
+function roomsToShow(det){
+  const sel = det && state.selected.get(det.id);
+  if(sel && sel.rooms && sel.rooms.size>0) return det.rooms.filter(r=>sel.rooms.has(r.name));
+  return det ? det.rooms : [];
+}
+function toggleRoom(id, roomName){
+  const det = detail.get(id);
+  if(!det || typeof det!=="object") return;
+  const sel = ensureSelected(id);
+  if(sel.rooms.size===0) det.rooms.forEach(r=>sel.rooms.add(r.name));  // 空=全室 → 明示化
+  if(sel.rooms.has(roomName)) sel.rooms.delete(roomName); else sel.rooms.add(roomName);
+  if(sel.rooms.size===det.rooms.length) sel.rooms = new Set();         // 全室は「空=全室」に戻す
+  const cnt = $("#roomSelCount"); if(cnt) cnt.textContent = (sel.rooms.size===0 ? det.rooms.length : sel.rooms.size);
+  const b = $("#mdAddBtn");
+  if(b){ b.className = "btn md-add"; b.textContent = "✓ 選択済み（クリックで会場ごと解除）"; }
+  renderTray();
 }
 
 /* ============================================================
@@ -869,12 +905,18 @@ function detailHTML(d){
       (d.images.length>1? '<div class="thumbs">'+d.images.map((u,i)=>'<img class="'+(i===0?"on":"")+'" data-full="'+esc(u+"?w=900&h=520&fit=crop&fm=webp")+'" src="'+esc(thumbURL(u,160,110))+'">').join("")+'</div>':'')+
     '</div>') : "";
   const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => (r.caps[l]||0)>0));
+  const selRooms = (state.selected.get(d.id)||{}).rooms;
+  const isRoomOn = name => !selRooms || selRooms.size===0 || selRooms.has(name);
+  const selCount = (!selRooms || selRooms.size===0) ? d.rooms.length : selRooms.size;
+  const idJs = esc(d.id).replace(/'/g,"\\'");
   const roomTable = d.rooms.length ? (
-    '<div class="sect"><span class="label">会議室スペック（'+d.rooms.length+'室）</span>'+
+    '<div class="sect"><span class="label">会議室スペック — 利用する部屋を選択（<span id="roomSelCount">'+selCount+'</span> / '+d.rooms.length+'室）</span>'+
+    '<div class="roomsel-hint">チェックした部屋が提案ページ・PPTXに反映されます（既定は全室）</div>'+
     '<div class="rooms-wrap"><table class="rooms"><thead><tr>'+
-      '<th>会議室</th><th>階</th><th>面積</th><th>天井</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th>'+
+      '<th>利用</th><th>会議室</th><th>階</th><th>面積</th><th>天井</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th>'+
     '</tr></thead><tbody>'+
       d.rooms.map(r=>'<tr>'+
+        '<td class="rmchk"><input type="checkbox" '+(isRoomOn(r.name)?"checked":"")+' data-rn="'+esc(r.name)+'" onchange="toggleRoom(\''+idJs+'\', this.dataset.rn)"></td>'+
         '<td class="nm">'+esc(r.name)+'</td>'+
         '<td>'+esc(r.floor||"—")+'</td>'+
         '<td>'+(r.area?esc(r.area)+"㎡":"—")+'</td>'+
@@ -898,7 +940,7 @@ function detailHTML(d){
       '<button class="close" onclick="closeModal()">×</button>'+
     '</div>'+
     '<div class="modal-body">'+gallery+
-      '<button class="btn '+(picked?"":"accent")+' md-add" onclick="toggleSelect(\''+esc(d.id).replace(/'/g,"\\'")+'\');closeModal()">'+(picked?"✓ 選択済み（外す）":"＋ この会場を提案に追加")+'</button>'+
+      '<button id="mdAddBtn" class="btn '+(picked?"":"accent")+' md-add" onclick="toggleSelect(\''+esc(d.id).replace(/'/g,"\\'")+'\');closeModal()">'+(picked?"✓ 選択済み（外す）":"＋ この会場を提案に追加")+'</button>'+
       desc+feats+roomTable+access+
       '<div style="margin-top:20px"><a class="btn" href="'+esc(d.url)+'" target="_blank" rel="noopener">元ページを開く ↗</a></div>'+
     '</div>'
@@ -926,6 +968,7 @@ function enterCustomer(){
   $("#customerView").classList.remove("hidden");
   $("#modeBtn").textContent = "検討モードに戻る";
   $("#printBtn").classList.remove("hidden");
+  $("#pptBtn").classList.remove("hidden");
   tray.classList.remove("show");
   window.scrollTo(0,0);
   syncHash();
@@ -937,7 +980,132 @@ function exitCustomer(){
   $("#browseView").classList.remove("hidden");
   $("#modeBtn").textContent = "顧客共有モード";
   $("#printBtn").classList.add("hidden");
+  $("#pptBtn").classList.add("hidden");
   syncHash(); render();
+}
+
+/* ============================================================
+   PowerPoint (PPTX) 出力  — PptxGenJS でクライアント側生成
+   ============================================================ */
+$("#pptBtn").onclick = () => exportPPTX();
+
+async function imgToDataURL(url){
+  return await new Promise(resolve=>{
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = ()=>{
+      try{
+        const cv = document.createElement("canvas");
+        cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+        cv.getContext("2d").drawImage(img,0,0);
+        resolve(cv.toDataURL("image/jpeg",0.85));
+      }catch(e){ resolve(null); }
+    };
+    img.onerror = ()=> resolve(null);
+    img.src = "https://cors.eu.org/" + url;
+  });
+}
+
+async function exportPPTX(){
+  if(typeof PptxGenJS === "undefined"){ toast("PPTXライブラリを読込中です。数秒後にもう一度お試しください"); return; }
+  const sel = [...state.selected.values()];
+  if(!sel.length){ toast("先に会場を選択してください"); return; }
+  const btn = $("#pptBtn"); const old = btn.textContent; btn.textContent = "⏳ 生成中…"; btn.disabled = true;
+  try{
+    const dets = [];
+    for(const f of sel){
+      try{ dets.push(await ensureDetail(f)); }
+      catch(e){ dets.push({...f, images:[], rooms:[], access:[], features:[], maxCap:0, roomCount:0, address:"", mapEmbed:""}); }
+    }
+    const INK="1A1A1A", RED="D90012", GRAY="5A574F", FAINT="9A968C", LINE="E3E0D8", GOLD="B0965F", BG="FAF9F6", W="FFFFFF";
+    const HEAD="Yu Mincho", BODY="Meiryo";
+    const pptx = new PptxGenJS();
+    pptx.defineLayout({name:"W16x9", width:13.333, height:7.5}); pptx.layout = "W16x9";
+    const today = state.pdate || new Date().toLocaleDateString("ja-JP",{year:"numeric",month:"long",day:"numeric"});
+
+    /* ── カバー ── */
+    let s = pptx.addSlide(); s.background = {color:W};
+    s.addShape(pptx.ShapeType.rect,{x:0,y:0,w:0.32,h:7.5,fill:{color:RED}});
+    s.addText("TKP  MEETING ROOM  PROPOSAL",{x:0.9,y:1.35,w:11.5,h:0.4,fontSize:12,color:GOLD,fontFace:BODY,charSpacing:3});
+    s.addText("会議室 ご提案",{x:0.85,y:1.85,w:11.5,h:1.2,fontSize:44,color:INK,fontFace:HEAD,bold:true});
+    s.addText(state.client||"〇〇株式会社 御中",{x:0.9,y:3.55,w:11.5,h:0.7,fontSize:24,color:INK,fontFace:HEAD});
+    s.addShape(pptx.ShapeType.line,{x:0.92,y:4.4,w:5,h:0,line:{color:LINE,width:1}});
+    [["ご提案日",today],["ご担当",state.repName||""],["所属",state.repOrg||"TKP 営業部"],["連絡先",state.repTel||""]].forEach((m,idx)=>{
+      const x = 0.9 + idx*3.0;
+      s.addText(m[0],{x,y:5.15,w:2.8,h:0.3,fontSize:10,color:FAINT,fontFace:BODY,charSpacing:2});
+      s.addText(m[1]||"—",{x,y:5.45,w:2.8,h:0.4,fontSize:13,color:INK,fontFace:BODY});
+    });
+    s.addText("TKP",{x:0.9,y:6.7,w:3,h:0.4,fontSize:16,bold:true,color:RED,fontFace:HEAD});
+
+    /* ── 比較 ── */
+    if(dets.length>=2){
+      s = pptx.addSlide(); s.background = {color:BG};
+      s.addText("COMPARISON",{x:0.62,y:0.4,w:12,h:0.3,fontSize:10,color:GOLD,fontFace:BODY,charSpacing:3});
+      s.addText("会場比較",{x:0.6,y:0.68,w:12,h:0.7,fontSize:26,color:INK,fontFace:HEAD,bold:true});
+      const areaOf = d => d.rooms.reduce((m,r)=>Math.max(m,r.area||0),0);
+      const priceOf = d => { const ps=d.rooms.filter(r=>r.priceMin>0).map(r=>r.priceMin); return ps.length?Math.min(...ps):0; };
+      const headRow = [{text:"",options:{fill:{color:BG}}}].concat(dets.map(d=>({text:d.name,options:{bold:true,color:INK,fontFace:HEAD,fontSize:13,fill:{color:W},align:"center",valign:"middle"}})));
+      const rowsData = [
+        ["最大収容", dets.map(d=>d.maxCap? d.maxCap+" 名":"—")],
+        ["最大面積", dets.map(d=>{const a=areaOf(d);return a? a+" ㎡":"—";})],
+        ["会議室数", dets.map(d=>(d.roomCount||"—")+" 室")],
+        ["最寄", dets.map(d=>(d.station||(d.access[0]||"—")).split("\n")[0])],
+        ["料金（最小/時）", dets.map(d=>{const p=priceOf(d);return p? yen(p):"—";})],
+      ];
+      const tbl = [headRow];
+      rowsData.forEach(rd=>{
+        tbl.push([{text:rd[0],options:{bold:true,color:FAINT,fontSize:11,fontFace:BODY,fill:{color:BG},valign:"middle"}}]
+          .concat(rd[1].map(v=>({text:String(v),options:{color:INK,fontSize:12,fontFace:BODY,align:"center",valign:"middle",fill:{color:W}}}))));
+      });
+      const restW = (12.1-2.3)/dets.length;
+      s.addTable(tbl,{x:0.6,y:1.55,rowH:0.62,border:{type:"solid",color:LINE,pt:1},colW:[2.3].concat(dets.map(()=>restW))});
+    }
+
+    /* ── 会場ごと ── */
+    for(let i=0;i<dets.length;i++){
+      const d = dets[i];
+      const chosen = roomsToShow(d);
+      s = pptx.addSlide(); s.background = {color:W};
+      s.addText(String(i+1).padStart(2,"0"),{x:0.6,y:0.42,w:1,h:0.7,fontSize:26,color:GOLD,fontFace:HEAD,bold:true});
+      s.addText(d.name,{x:1.45,y:0.5,w:11.2,h:0.7,fontSize:22,color:INK,fontFace:HEAD,bold:true});
+      const subline = [d.brand||"", (d.station?"｜  "+(d.station||"").split("\n")[0]:""), (d.maxCap?"｜  最大 "+d.maxCap+"名":"")].filter(Boolean).join("　");
+      s.addText(subline,{x:1.47,y:1.12,w:11.2,h:0.35,fontSize:11,color:GRAY,fontFace:BODY});
+      const imgData = d.images.length ? await imgToDataURL(d.images[0]+"?w=1100&h=760&fit=crop&fm=jpg") : null;
+      if(imgData) s.addImage({data:imgData,x:0.6,y:1.7,w:5.5,h:3.75,sizing:{type:"cover",w:5.5,h:3.75}});
+      else s.addShape(pptx.ShapeType.rect,{x:0.6,y:1.7,w:5.5,h:3.75,fill:{color:"F0EEE7"}});
+      if(d.address) s.addText([{text:"▸ ",options:{color:RED}},{text:d.address,options:{color:GRAY}}],{x:0.6,y:5.6,w:5.5,h:0.95,fontSize:9.5,fontFace:BODY,valign:"top"});
+      const cols = LAYOUT_ORDER.filter(l=>chosen.some(r=>(r.caps[l]||0)>0)).slice(0,4);
+      const th = ["会議室","面積"].concat(cols).concat(["料金/時"]).map(t=>({text:t,options:{bold:true,color:FAINT,fontSize:9,fontFace:BODY,fill:{color:"F4F2EC"},align:"center",valign:"middle"}}));
+      const body = chosen.slice(0,9).map(r=>[
+        {text:r.name,options:{color:INK,fontSize:9,fontFace:BODY,bold:true,valign:"middle"}},
+        {text:r.area?r.area+"㎡":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}}
+      ].concat(cols.map(c=>({text:(r.caps[c]||0)?r.caps[c]+"名":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}})))
+       .concat([{text:roomPrice(r),options:{color:RED,fontSize:9,fontFace:BODY,align:"right",valign:"middle"}}]));
+      s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":""),{x:6.35,y:1.7,w:6.35,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true});
+      if(chosen.length) s.addTable([th].concat(body),{x:6.35,y:2.08,w:6.4,border:{type:"solid",color:LINE,pt:0.5},autoPage:false});
+      else s.addText("会議室情報を取得できませんでした",{x:6.35,y:2.2,w:6.3,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
+      if(chosen.length>9) s.addText("ほか "+(chosen.length-9)+" 室",{x:6.35,y:6.95,w:6.3,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
+    }
+
+    /* ── お問い合わせ ── */
+    s = pptx.addSlide(); s.background = {color:INK};
+    s.addText("貴社に最適な会場を、ワンストップでご提案します。",{x:0.9,y:2.6,w:11.5,h:1,fontSize:24,color:W,fontFace:HEAD,bold:true});
+    s.addText("会場のご手配から運営・ケータリングまで。ご不明点はお気軽にご相談ください。",{x:0.9,y:3.7,w:11.5,h:0.5,fontSize:13,color:"C8C6C0",fontFace:BODY});
+    const cinfo = [state.repOrg||"TKP 営業部", state.repName||"", state.repTel||""].filter(Boolean).join("　｜　");
+    s.addText(cinfo,{x:0.9,y:4.6,w:11.5,h:0.5,fontSize:13,color:GOLD,fontFace:BODY});
+    s.addText("TKP",{x:0.9,y:6.5,w:3,h:0.5,fontSize:18,bold:true,color:RED,fontFace:HEAD});
+
+    const safeClient = (state.client||"御中").replace(/\s+/g,"").replace(/[\/\\:*?"<>|]/g,"");
+    const nd = new Date();
+    const ymd = nd.getFullYear()+String(nd.getMonth()+1).padStart(2,"0")+String(nd.getDate()).padStart(2,"0");
+    await pptx.writeFile({fileName:"TKP提案書_"+safeClient+"_"+ymd+".pptx"});
+    toast("PPTXをダウンロードしました");
+  }catch(e){
+    console.error("PPTX error", e);
+    toast("PPTX生成に失敗しました");
+  }finally{
+    btn.textContent = old; btn.disabled = false;
+  }
 }
 
 let custRendering = false;
@@ -996,13 +1164,17 @@ function comparisonHTML(dets){
     '</tbody></table></div></div>';
 }
 function venueBlockHTML(d, i){
-  const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => (r.caps[l]||0)>0)).slice(0,6);
-  const rooms = d.rooms.slice(0,7);
+  const chosen = roomsToShow(d);
+  const subset = chosen.length && chosen.length !== d.rooms.length;
+  const cols = LAYOUT_ORDER.filter(l => chosen.some(r => (r.caps[l]||0)>0)).slice(0,4);
+  const rooms = chosen.slice(0,8);
   const photos = d.images.slice(1,5);
-  const table = d.rooms.length ? (
+  const mapOk = d.mapEmbed && /^https:\/\/www\.google\.com\/maps\/embed/.test(d.mapEmbed);
+  const table = chosen.length ? (
+    '<div class="roomcap">'+(subset?'ご希望の '+chosen.length+' 室':'会議室 '+chosen.length+' 室')+'</div>'+
     '<div class="rooms-wrap"><table class="rooms"><thead><tr><th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
       rooms.map(r=>'<tr><td class="nm">'+esc(r.name)+'</td><td>'+(r.area?esc(r.area)+"㎡":"—")+'</td>'+cols.map(c=>'<td>'+((r.caps[c]||0)?esc(r.caps[c])+"名":"—")+'</td>').join("")+'<td class="pr">'+esc(roomPrice(r))+'</td></tr>').join("")+
-      (d.rooms.length>7?'<tr><td colspan="'+(cols.length+3)+'" style="text-align:center;color:var(--ink-faint)">ほか '+(d.rooms.length-7)+' 室</td></tr>':'')+
+      (chosen.length>8?'<tr><td colspan="'+(cols.length+3)+'" style="text-align:center;color:var(--ink-faint)">ほか '+(chosen.length-8)+' 室</td></tr>':'')+
     '</tbody></table></div>') : '<p style="color:var(--ink-faint)">会議室情報を取得できませんでした。</p>';
   return '<div class="venue-block">'+
     '<div class="vn"><span class="num">'+String(i+1).padStart(2,"0")+'</span><h2>'+esc(d.name)+'</h2></div>'+
@@ -1011,11 +1183,12 @@ function venueBlockHTML(d, i){
       '<div>'+
         (d.images.length? '<div class="photo"><img src="'+esc(d.images[0]+"?w=760&h=560&fit=crop&fm=webp")+'" alt=""></div>':'<div class="photo"></div>')+
         (photos.length? '<div class="vphotos">'+photos.map(u=>'<img src="'+esc(thumbURL(u,360,240))+'" alt="">').join("")+'</div>':'')+
+        (d.address? '<div class="acc" style="margin-top:12px"><div class="addr"><i>▸</i> '+esc(d.address)+'</div>'+d.access.slice(0,2).map(a=>'<div class="acc-line">'+esc(a.replace(/\n/g," / "))+'</div>').join("")+'</div>':'')+
+        (mapOk? '<iframe class="mapf" style="margin-top:10px" loading="lazy" src="'+esc(d.mapEmbed)+'"></iframe>':'')+
       '</div>'+
       '<div>'+
         (d.description? '<div class="desc" style="margin-bottom:16px">'+esc(d.description)+'</div>':'')+
         (d.features.length? '<div class="tags" style="margin-bottom:16px">'+d.features.slice(0,6).map(t=>'<span class="tag">'+esc(t)+'</span>').join("")+'</div>':'')+
-        (d.address? '<div class="acc" style="margin-bottom:14px"><div class="addr">'+esc(d.address)+'</div></div>':'')+
         table+
       '</div>'+
     '</div>'+
