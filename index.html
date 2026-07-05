@@ -160,6 +160,8 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .rooms td.rmchk,.rooms th:first-child{text-align:center;width:40px}
 .rooms td.rmchk input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer;margin:0}
 .roomsel-hint{font-size:11px;color:var(--ink-faint);margin:-4px 0 10px}
+.roomselall{border:1px solid var(--line-strong);background:var(--surface);border-radius:100px;padding:2px 10px;font-size:10.5px;color:var(--ink-soft);margin-left:2px;transition:.15s}
+.roomselall:hover{border-color:var(--ink);color:var(--ink)}
 .roomcap{font-size:11px;letter-spacing:.06em;color:var(--gold);margin-bottom:7px;font-weight:500}
 .acc-line{font-size:12px;color:var(--ink-soft);line-height:1.7}
 .acc .addr i{color:var(--accent);font-style:normal;margin-right:3px}
@@ -360,14 +362,31 @@ const PREF_PATH = {
 const BRANDS = ["PREMIUM","TKP","fabbit","CIRQ","cabin","その他"];
 
 /* ── プロキシ層 ── */
+/* 複数の公開CORSプロキシ。1本が混雑/停止(429等)でも他で取得できるよう
+   2本ずつ並列レース(Promise.any)し、最初に成功したものを採用する */
 const PROXIES = [
   u => "https://cors.eu.org/" + u,
+  u => "https://api.cors.lol/?url=" + encodeURIComponent(u),
   u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
+  u => "https://corsproxy.io/?url=" + encodeURIComponent(u),
   u => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u),
+  u => "https://thingproxy.freeboard.io/fetch/" + u,
 ];
 const TTL = 15*60*1000;
 const memCache = new Map();
-
+function _fetchProxy(purl, ms){
+  return new Promise((resolve,reject)=>{
+    const ctrl = new AbortController();
+    const to = setTimeout(()=>{ ctrl.abort(); reject(new Error("timeout")); }, ms);
+    fetch(purl,{signal:ctrl.signal}).then(async r=>{
+      clearTimeout(to);
+      if(!r.ok) return reject(new Error("HTTP "+r.status));
+      const html = await r.text();
+      if(!html || html.length < 800) return reject(new Error("empty"));
+      resolve(html);
+    }).catch(e=>{ clearTimeout(to); reject(e); });
+  });
+}
 async function proxyFetch(url){
   const hit = memCache.get(url);
   if(hit && Date.now()-hit.t < TTL) return hit.html;
@@ -376,20 +395,15 @@ async function proxyFetch(url){
     if(raw){ const o = JSON.parse(raw); if(Date.now()-o.t < TTL){ memCache.set(url,o); return o.html; } }
   }catch(e){}
   let lastErr;
-  for(const mk of PROXIES){
+  for(let i=0;i<PROXIES.length;i+=2){
+    const group = PROXIES.slice(i,i+2).map(mk=>_fetchProxy(mk(url), 9000));
     try{
-      const ctrl = new AbortController();
-      const to = setTimeout(()=>ctrl.abort(), 22000);
-      const r = await fetch(mk(url), {signal:ctrl.signal});
-      clearTimeout(to);
-      if(!r.ok) throw new Error("HTTP "+r.status);
-      const html = await r.text();
-      if(!html || html.length < 800) throw new Error("empty");
+      const html = await Promise.any(group);
       const rec = {t:Date.now(), html};
       memCache.set(url, rec);
       try{ if(html.length < 550000) localStorage.setItem("kk:"+url, JSON.stringify(rec)); }catch(e){}
       return html;
-    }catch(e){ lastErr = e; }
+    }catch(e){ lastErr = (e && e.errors) ? e.errors[e.errors.length-1] : e; }
   }
   throw lastErr || new Error("all proxies failed");
 }
@@ -891,6 +905,21 @@ function toggleRoom(id, roomName){
   renderTray();
   if(state.mode==="customer") rerenderVenueBlock(id);
 }
+function selectAllRooms(id, on){
+  const det = detail.get(id);
+  if(!det || typeof det!=="object") return;
+  const sel = ensureSelected(id);
+  sel.rooms = on ? new Set() : new Set(det.rooms.slice(1).map(r=>r.name).length ? [det.rooms[0].name] : det.rooms.map(r=>r.name));
+  renderTray();
+  if(state.mode==="customer") rerenderVenueBlock(id);
+  const cnt = $("#roomSelCount"); if(cnt) cnt.textContent = (sel.rooms.size===0? det.rooms.length : sel.rooms.size);
+  document.querySelectorAll(".modal .rooms tbody tr").forEach(tr=>{
+    const cb = tr.querySelector(".rmchk input"); if(!cb) return;
+    const on2 = sel.rooms.size===0 || sel.rooms.has(cb.dataset.rn);
+    cb.checked = on2; tr.classList.toggle("row-off", !on2);
+  });
+  const b = $("#mdAddBtn"); if(b){ b.className="btn md-add"; b.textContent="✓ 選択済み（クリックで会場ごと解除）"; }
+}
 
 /* ============================================================
    詳細モーダル
@@ -920,7 +949,7 @@ function detailHTML(d){
   const idJs = esc(d.id).replace(/'/g,"\\'");
   const roomTable = d.rooms.length ? (
     '<div class="sect"><span class="label">会議室スペック — 利用する部屋を選択（<span id="roomSelCount">'+selCount+'</span> / '+d.rooms.length+'室）</span>'+
-    '<div class="roomsel-hint">チェックした部屋が提案ページ・PPTXに反映されます（既定は全室）</div>'+
+    '<div class="roomsel-hint">チェックした部屋が提案ページ・PPTXに反映されます（既定は全室） <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',true)">全選択</button> <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button></div>'+
     '<div class="rooms-wrap"><table class="rooms"><thead><tr>'+
       '<th>利用</th><th>会議室</th><th>階</th><th>面積</th><th>天井</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th>'+
     '</tr></thead><tbody>'+
@@ -998,23 +1027,24 @@ function exitCustomer(){
    ============================================================ */
 $("#pptBtn").onclick = () => exportPPTX();
 
-async function imgToDataURL(url){
-  return await new Promise(resolve=>{
-    let done=false; const finish=v=>{ if(done) return; done=true; resolve(v); };
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    img.onload = ()=>{
-      try{
-        const cv = document.createElement("canvas");
-        cv.width = img.naturalWidth; cv.height = img.naturalHeight;
-        cv.getContext("2d").drawImage(img,0,0);
-        finish(cv.toDataURL("image/jpeg",0.85));
-      }catch(e){ finish(null); }
-    };
-    img.onerror = ()=> finish(null);
-    setTimeout(()=>finish(null), 14000);
-    img.src = "https://cors.eu.org/" + url;
+function _loadImgViaProxy(purl){
+  return new Promise((resolve,reject)=>{
+    let done=false;
+    const img = new Image(); img.crossOrigin = "anonymous";
+    img.onload = ()=>{ if(done) return; done=true;
+      try{ const cv=document.createElement("canvas"); cv.width=img.naturalWidth; cv.height=img.naturalHeight; cv.getContext("2d").drawImage(img,0,0); resolve(cv.toDataURL("image/jpeg",0.85)); }
+      catch(e){ reject(e); } };
+    img.onerror = ()=>{ if(done) return; done=true; reject(new Error("imgerr")); };
+    setTimeout(()=>{ if(done) return; done=true; reject(new Error("timeout")); }, 12000);
+    img.src = purl;
   });
+}
+async function imgToDataURL(url){
+  for(let i=0;i<PROXIES.length && i<4;i+=2){
+    const group = PROXIES.slice(i,i+2).map(mk=>_loadImgViaProxy(mk(url)));
+    try{ return await Promise.any(group); }catch(e){}
+  }
+  return null;
 }
 
 /* Google Maps embed の緯度経度から OSM タイルを合成した静的地図画像を生成
@@ -1054,8 +1084,24 @@ async function staticMapDataURL(embed, zoom, cropW, cropH){
 }
 async function ensureMapImg(d){
   if(d.mapImg!==undefined) return d.mapImg;
-  d.mapImg = await staticMapDataURL(d.mapEmbed) || null;
+  let img = null;
+  // 1) サイト掲載のイラストアクセスマップ（/access/ ページの Access_*.webp）
+  try{
+    const html = await proxyFetch(d.url.replace(/\/+$/,"") + "/access/");
+    const m = html.match(/https:\/\/[^"'\s)]+Access_[0-9A-Za-z_\-]+\.(?:webp|jpg|jpeg|png)/i);
+    if(m) img = m[0];
+  }catch(e){}
+  // 2) フォールバック: OSMタイル合成の静的地図
+  if(!img && d.mapEmbed){ img = await staticMapDataURL(d.mapEmbed); }
+  d.mapImg = img || null;
   return d.mapImg;
+}
+/* PPTX用: 地図をJPEG dataURLで返す（URL(webp)ならcanvasでJPEG化） */
+async function mapImgForPPTX(d){
+  const mi = await ensureMapImg(d);
+  if(!mi) return null;
+  if(mi.indexOf("data:")===0) return mi;
+  return await imgToDataURL(mi);
 }
 let _onestopData;
 async function onestopDataURL(){
@@ -1139,7 +1185,7 @@ async function exportPPTX(){
       const imgData = d.images.length ? await imgToDataURL(d.images[0]+"?w=1100&h=760&fit=crop&fm=jpg") : null;
       if(imgData) s.addImage({data:imgData,x:0.55,y:1.65,w:5.65,h:3.05,sizing:{type:"cover",w:5.65,h:3.05}});
       else s.addShape(pptx.ShapeType.rect,{x:0.55,y:1.65,w:5.65,h:3.05,fill:{color:"F0EEE7"}});
-      const mapData = await ensureMapImg(d);
+      const mapData = await mapImgForPPTX(d);
       if(mapData) s.addImage({data:mapData,x:0.55,y:4.85,w:5.65,h:2.0,sizing:{type:"cover",w:5.65,h:2.0}});
       /* 右：紹介＋設備＋住所＋会議室 */
       const rx = 6.5, rw = 6.3;
@@ -1162,16 +1208,24 @@ async function exportPPTX(){
       } else s.addText("会議室情報を取得できませんでした",{x:rx,y:ry,w:rw,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
     }
 
-    /* ── ワンストップサービス（提案フォルダのスライドを画像として組込） ── */
+    /* ── ワンストップサービス（提案フォルダのスライドを画像として組込・明るい背景）── */
     const osData = await onestopDataURL();
-    if(osData){ s = pptx.addSlide(); s.background = {color:"000000"}; s.addImage({data:osData,x:0,y:0,w:13.333,h:7.5}); }
+    if(osData){
+      s = pptx.addSlide(); s.background = {color:BG};
+      s.addText("ONE-STOP SERVICE",{x:0.62,y:0.4,w:12,h:0.3,fontSize:10,color:GOLD,fontFace:BODY,charSpacing:3});
+      s.addText("TKPのワンストップサービス",{x:0.6,y:0.68,w:12,h:0.7,fontSize:26,color:INK,fontFace:HEAD,bold:true});
+      const iw = 9.8, ih = iw*1012/1800;
+      s.addImage({data:osData,x:(13.333-iw)/2,y:1.7,w:iw,h:ih});
+    }
 
-    /* ── お問い合わせ ── */
-    s = pptx.addSlide(); s.background = {color:INK};
-    s.addText("貴社に最適な会場を、ワンストップでご提案します。",{x:0.9,y:2.6,w:11.5,h:1,fontSize:24,color:W,fontFace:HEAD,bold:true});
-    s.addText("会場のご手配から運営・ケータリングまで。ご不明点はお気軽にご相談ください。",{x:0.9,y:3.7,w:11.5,h:0.5,fontSize:13,color:"C8C6C0",fontFace:BODY});
+    /* ── お問い合わせ（カバーと同じ明るい背景）── */
+    s = pptx.addSlide(); s.background = {color:W};
+    s.addText("CONTACT",{x:0.9,y:2.2,w:11.5,h:0.3,fontSize:10,color:GOLD,fontFace:BODY,charSpacing:3});
+    s.addText("貴社に最適な会場を、ワンストップでご提案します。",{x:0.9,y:2.55,w:11.5,h:1,fontSize:24,color:INK,fontFace:HEAD,bold:true});
+    s.addText("会場のご手配から運営・ケータリングまで。ご不明点はお気軽にご相談ください。",{x:0.9,y:3.7,w:11.5,h:0.5,fontSize:13,color:GRAY,fontFace:BODY});
+    s.addShape(pptx.ShapeType.line,{x:0.92,y:4.5,w:5,h:0,line:{color:LINE,width:1}});
     const cinfo = [state.repOrg||"TKP 営業部", state.repName||"", state.repTel||""].filter(Boolean).join("　｜　");
-    s.addText(cinfo,{x:0.9,y:4.6,w:11.5,h:0.5,fontSize:13,color:GOLD,fontFace:BODY});
+    s.addText(cinfo,{x:0.9,y:4.75,w:11.5,h:0.5,fontSize:13,color:INK,fontFace:BODY});
     s.addText("TKP",{x:0.9,y:6.5,w:3,h:0.5,fontSize:18,bold:true,color:RED,fontFace:HEAD});
 
     const safeClient = (state.client||"御中").replace(/\s+/g,"").replace(/[\/\\:*?"<>|]/g,"");
@@ -1263,7 +1317,7 @@ function venueBlockHTML(d, i){
   const idJs = esc(d.id).replace(/'/g,"\\'");
   const rows = d.rooms.slice(0,12);
   const table = d.rooms.length ? (
-    '<div class="roomcap">'+(chosenCount!==d.rooms.length?"ご希望の "+chosenCount+" 室":"会議室 "+d.rooms.length+" 室")+'<span class="roomedit-hint print-hide"> ・ チェックした部屋が表示／PPTXに反映されます</span></div>'+
+    '<div class="roomcap">'+(chosenCount!==d.rooms.length?"ご希望の "+chosenCount+" 室":"会議室 "+d.rooms.length+" 室")+'<span class="roomedit-hint print-hide"> ・ チェックで表示／PPTX反映</span> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',true)">全選択</button> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button></div>'+
     '<div class="rooms-wrap"><table class="rooms"><thead><tr><th class="print-hide">利用</th><th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
       rows.map(r=>'<tr class="'+(isOn(r.name)?"":"row-off")+'">'+
         '<td class="rmchk print-hide"><input type="checkbox" '+(isOn(r.name)?"checked":"")+' data-rn="'+esc(r.name)+'" onchange="toggleRoom(\''+idJs+'\', this.dataset.rn)"></td>'+
