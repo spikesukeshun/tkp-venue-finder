@@ -143,6 +143,12 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .acc{font-size:13px;color:var(--ink-soft);line-height:1.9}
 .acc .addr{color:var(--ink);margin-bottom:8px}
 .mapf{width:100%;aspect-ratio:16/8;border:1px solid var(--line);border-radius:var(--radius);margin-top:12px;background:var(--surface-2)}
+.vmap{margin-top:10px}
+.vmap .mapimg,.mapimg{width:100%;display:block;border:1px solid var(--line);border-radius:var(--radius)}
+.rooms tr.row-off td{opacity:.38}
+.rooms tr.row-off td.rmchk{opacity:1}
+.roomedit-hint{font-weight:400;color:var(--ink-faint);letter-spacing:0;font-size:10.5px}
+.onestop-sec .onestop-img{width:100%;display:block;border-radius:var(--radius);border:1px solid var(--line)}
 .rooms{width:100%;border-collapse:collapse;font-size:12.5px}
 .rooms th,.rooms td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
 .rooms th{font-weight:500;color:var(--ink-faint);font-size:10.5px;letter-spacing:.06em;text-align:right;position:sticky}
@@ -229,6 +235,8 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
   body{background:#fff}
   .cover .to input,.cover .meta input{border:none}
   .venue-block,.cust-sec{page-break-inside:avoid}
+  .print-hide{display:none!important}
+  .rooms tr.row-off{display:none!important}
 }
 </style>
 </head>
@@ -881,6 +889,7 @@ function toggleRoom(id, roomName){
   const b = $("#mdAddBtn");
   if(b){ b.className = "btn md-add"; b.textContent = "✓ 選択済み（クリックで会場ごと解除）"; }
   renderTray();
+  if(state.mode==="customer") rerenderVenueBlock(id);
 }
 
 /* ============================================================
@@ -991,6 +1000,7 @@ $("#pptBtn").onclick = () => exportPPTX();
 
 async function imgToDataURL(url){
   return await new Promise(resolve=>{
+    let done=false; const finish=v=>{ if(done) return; done=true; resolve(v); };
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = ()=>{
@@ -998,12 +1008,67 @@ async function imgToDataURL(url){
         const cv = document.createElement("canvas");
         cv.width = img.naturalWidth; cv.height = img.naturalHeight;
         cv.getContext("2d").drawImage(img,0,0);
-        resolve(cv.toDataURL("image/jpeg",0.85));
-      }catch(e){ resolve(null); }
+        finish(cv.toDataURL("image/jpeg",0.85));
+      }catch(e){ finish(null); }
     };
-    img.onerror = ()=> resolve(null);
+    img.onerror = ()=> finish(null);
+    setTimeout(()=>finish(null), 14000);
     img.src = "https://cors.eu.org/" + url;
   });
+}
+
+/* Google Maps embed の緯度経度から OSM タイルを合成した静的地図画像を生成
+   （提案ページ・PPTXで共通利用。scraper.download_map_image のJS移植） */
+function latlngFromEmbed(embed){
+  if(!embed) return null;
+  const mLng = embed.match(/!2d([-\d.]+)/), mLat = embed.match(/!3d([-\d.]+)/);
+  if(!mLat || !mLng) return null;
+  return {lat:parseFloat(mLat[1]), lng:parseFloat(mLng[1])};
+}
+async function staticMapDataURL(embed, zoom, cropW, cropH){
+  zoom = zoom||15; cropW = cropW||760; cropH = cropH||360;
+  const ll = latlngFromEmbed(embed); if(!ll) return null;
+  const n = Math.pow(2,zoom), latRad = ll.lat*Math.PI/180;
+  const xf = (ll.lng+180)/360*n;
+  const yf = (1 - Math.log(Math.tan(latRad)+1/Math.cos(latRad))/Math.PI)/2*n;
+  const tx = Math.floor(xf), ty = Math.floor(yf), TILE=256, COLS=3, ROWS=3;
+  const canvas = document.createElement("canvas"); canvas.width=TILE*COLS; canvas.height=TILE*ROWS;
+  const ctx = canvas.getContext("2d"); ctx.fillStyle="#e5e3dc"; ctx.fillRect(0,0,canvas.width,canvas.height);
+  await Promise.all([0,1,2].flatMap(row=>[0,1,2].map(col=>new Promise(res=>{
+    let done=false; const fin=()=>{ if(done) return; done=true; res(); };
+    const img = new Image(); img.crossOrigin="anonymous";
+    img.onload=()=>{ try{ ctx.drawImage(img,col*TILE,row*TILE);}catch(e){} fin(); };
+    img.onerror=fin;
+    setTimeout(fin, 8000);
+    img.src = "https://tile.openstreetmap.org/"+zoom+"/"+(tx+col-1)+"/"+(ty+row-1)+".png";
+  }))));
+  const cx = (xf-tx+1)*TILE, cy = (yf-ty+1)*TILE;
+  const left = Math.max(0,Math.min(TILE*COLS-cropW, cx-cropW/2)), top = Math.max(0,Math.min(TILE*ROWS-cropH, cy-cropH/2));
+  const out = document.createElement("canvas"); out.width=cropW; out.height=cropH;
+  const o = out.getContext("2d");
+  o.drawImage(canvas,left,top,cropW,cropH,0,0,cropW,cropH);
+  const mx=cx-left, my=cy-top;
+  o.beginPath(); o.arc(mx,my,9,0,Math.PI*2); o.fillStyle="#D90012"; o.fill(); o.lineWidth=2; o.strokeStyle="#fff"; o.stroke();
+  o.beginPath(); o.arc(mx,my,3,0,Math.PI*2); o.fillStyle="#fff"; o.fill();
+  try{ return out.toDataURL("image/jpeg",0.85); }catch(e){ return null; }
+}
+async function ensureMapImg(d){
+  if(d.mapImg!==undefined) return d.mapImg;
+  d.mapImg = await staticMapDataURL(d.mapEmbed) || null;
+  return d.mapImg;
+}
+let _onestopData;
+async function onestopDataURL(){
+  if(_onestopData!==undefined) return _onestopData;
+  _onestopData = await new Promise(res=>{
+    let done=false; const fin=v=>{ if(done) return; done=true; res(v); };
+    const im = new Image();
+    im.onload = ()=>{ try{ const cv=document.createElement("canvas"); cv.width=im.naturalWidth; cv.height=im.naturalHeight; cv.getContext("2d").drawImage(im,0,0); fin(cv.toDataURL("image/jpeg",0.85)); }catch(e){ fin(null); } };
+    im.onerror = ()=>fin(null);
+    setTimeout(()=>fin(null), 10000);
+    im.src = "onestop.jpg";
+  });
+  return _onestopData;
 }
 
 async function exportPPTX(){
@@ -1061,31 +1126,45 @@ async function exportPPTX(){
       s.addTable(tbl,{x:0.6,y:1.55,rowH:0.62,border:{type:"solid",color:LINE,pt:1},colW:[2.3].concat(dets.map(()=>restW))});
     }
 
-    /* ── 会場ごと ── */
+    /* ── 会場ごと（提案ページのレイアウトを踏襲）── */
     for(let i=0;i<dets.length;i++){
       const d = dets[i];
       const chosen = roomsToShow(d);
       s = pptx.addSlide(); s.background = {color:W};
-      s.addText(String(i+1).padStart(2,"0"),{x:0.6,y:0.42,w:1,h:0.7,fontSize:26,color:GOLD,fontFace:HEAD,bold:true});
-      s.addText(d.name,{x:1.45,y:0.5,w:11.2,h:0.7,fontSize:22,color:INK,fontFace:HEAD,bold:true});
+      s.addText(String(i+1).padStart(2,"0"),{x:0.55,y:0.4,w:0.9,h:0.7,fontSize:26,color:GOLD,fontFace:HEAD,bold:true});
+      s.addText(d.name,{x:1.4,y:0.46,w:11.4,h:0.7,fontSize:22,color:INK,fontFace:HEAD,bold:true});
       const subline = [d.brand||"", (d.station?"｜  "+(d.station||"").split("\n")[0]:""), (d.maxCap?"｜  最大 "+d.maxCap+"名":"")].filter(Boolean).join("　");
-      s.addText(subline,{x:1.47,y:1.12,w:11.2,h:0.35,fontSize:11,color:GRAY,fontFace:BODY});
+      s.addText(subline,{x:1.42,y:1.1,w:11.4,h:0.35,fontSize:11,color:GRAY,fontFace:BODY});
+      /* 左：写真＋地図 */
       const imgData = d.images.length ? await imgToDataURL(d.images[0]+"?w=1100&h=760&fit=crop&fm=jpg") : null;
-      if(imgData) s.addImage({data:imgData,x:0.6,y:1.7,w:5.5,h:3.75,sizing:{type:"cover",w:5.5,h:3.75}});
-      else s.addShape(pptx.ShapeType.rect,{x:0.6,y:1.7,w:5.5,h:3.75,fill:{color:"F0EEE7"}});
-      if(d.address) s.addText([{text:"▸ ",options:{color:RED}},{text:d.address,options:{color:GRAY}}],{x:0.6,y:5.6,w:5.5,h:0.95,fontSize:9.5,fontFace:BODY,valign:"top"});
+      if(imgData) s.addImage({data:imgData,x:0.55,y:1.65,w:5.65,h:3.05,sizing:{type:"cover",w:5.65,h:3.05}});
+      else s.addShape(pptx.ShapeType.rect,{x:0.55,y:1.65,w:5.65,h:3.05,fill:{color:"F0EEE7"}});
+      const mapData = await ensureMapImg(d);
+      if(mapData) s.addImage({data:mapData,x:0.55,y:4.85,w:5.65,h:2.0,sizing:{type:"cover",w:5.65,h:2.0}});
+      /* 右：紹介＋設備＋住所＋会議室 */
+      const rx = 6.5, rw = 6.3;
+      let ry = 1.65;
+      if(d.description){ s.addText(d.description,{x:rx,y:ry,w:rw,h:1.15,fontSize:9.5,color:GRAY,fontFace:BODY,valign:"top",lineSpacingMultiple:1.15}); ry += 1.2; }
+      if(d.features && d.features.length){ s.addText(d.features.slice(0,6).join("　・　"),{x:rx,y:ry,w:rw,h:0.35,fontSize:9,color:GOLD,fontFace:BODY,valign:"top"}); ry += 0.4; }
+      if(d.address){ s.addText([{text:"▸ ",options:{color:RED}},{text:d.address,options:{color:GRAY}}],{x:rx,y:ry,w:rw,h:0.45,fontSize:9,fontFace:BODY,valign:"top"}); ry += 0.5; }
       const cols = LAYOUT_ORDER.filter(l=>chosen.some(r=>(r.caps[l]||0)>0)).slice(0,4);
-      const th = ["会議室","面積"].concat(cols).concat(["料金/時"]).map(t=>({text:t,options:{bold:true,color:FAINT,fontSize:9,fontFace:BODY,fill:{color:"F4F2EC"},align:"center",valign:"middle"}}));
-      const body = chosen.slice(0,9).map(r=>[
-        {text:r.name,options:{color:INK,fontSize:9,fontFace:BODY,bold:true,valign:"middle"}},
-        {text:r.area?r.area+"㎡":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}}
-      ].concat(cols.map(c=>({text:(r.caps[c]||0)?r.caps[c]+"名":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}})))
-       .concat([{text:roomPrice(r),options:{color:RED,fontSize:9,fontFace:BODY,align:"right",valign:"middle"}}]));
-      s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":""),{x:6.35,y:1.7,w:6.35,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true});
-      if(chosen.length) s.addTable([th].concat(body),{x:6.35,y:2.08,w:6.4,border:{type:"solid",color:LINE,pt:0.5},autoPage:false});
-      else s.addText("会議室情報を取得できませんでした",{x:6.35,y:2.2,w:6.3,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
-      if(chosen.length>9) s.addText("ほか "+(chosen.length-9)+" 室",{x:6.35,y:6.95,w:6.3,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
+      s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":"（"+d.rooms.length+" 室）"),{x:rx,y:ry,w:rw,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true}); ry += 0.36;
+      if(chosen.length){
+        const th = ["会議室","面積"].concat(cols).concat(["料金/時"]).map(t=>({text:t,options:{bold:true,color:FAINT,fontSize:9,fontFace:BODY,fill:{color:"F4F2EC"},align:"center",valign:"middle"}}));
+        const rows = chosen.slice(0,7);
+        const bodyRows = rows.map(r=>[
+          {text:r.name,options:{color:INK,fontSize:9,fontFace:BODY,bold:true,valign:"middle"}},
+          {text:r.area?r.area+"㎡":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}}
+        ].concat(cols.map(c=>({text:(r.caps[c]||0)?r.caps[c]+"名":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}})))
+         .concat([{text:roomPrice(r),options:{color:RED,fontSize:9,fontFace:BODY,align:"right",valign:"middle"}}]));
+        s.addTable([th].concat(bodyRows),{x:rx,y:ry,w:rw,border:{type:"solid",color:LINE,pt:0.5},autoPage:false});
+        if(chosen.length>7) s.addText("ほか "+(chosen.length-7)+" 室",{x:rx,y:6.95,w:rw,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
+      } else s.addText("会議室情報を取得できませんでした",{x:rx,y:ry,w:rw,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
     }
+
+    /* ── ワンストップサービス（提案フォルダのスライドを画像として組込） ── */
+    const osData = await onestopDataURL();
+    if(osData){ s = pptx.addSlide(); s.background = {color:"000000"}; s.addImage({data:osData,x:0,y:0,w:13.333,h:7.5}); }
 
     /* ── お問い合わせ ── */
     s = pptx.addSlide(); s.background = {color:INK};
@@ -1109,6 +1188,7 @@ async function exportPPTX(){
 }
 
 let custRendering = false;
+let custDets = [];
 async function renderCustomer(){
   const box = $("#custContent");
   const sel = [...state.selected.values()];
@@ -1141,12 +1221,23 @@ async function renderCustomer(){
     if(state.mode!=="customer"){ custRendering=false; return; }
   }
   custRendering = false;
+  custDets = dets;
   const body = $("#custBody"); if(!body) return;
   let html = "";
   if(dets.length>=2) html += comparisonHTML(dets);
   html += dets.map((d,i)=>venueBlockHTML(d,i)).join("");
+  html += '<div class="cust-sec onestop-sec"><span class="label">One-Stop Service</span><h2>TKPのワンストップサービス</h2>'+
+          '<p style="color:var(--ink-soft);margin:0 0 20px">会場のご手配から運営・ケータリングまで、貴社のイベントをワンストップでご支援します。</p>'+
+          '<img class="onestop-img" src="onestop.jpg" alt="TKPのワンストップサービス"></div>';
   html += '<div class="cust-sec" style="border-bottom:none;text-align:center"><span class="label">お問い合わせ</span><h2 style="margin-bottom:8px">貴社に最適な会場を、ワンストップでご提案します。</h2><p style="color:var(--ink-soft)">会場のご手配から運営・ケータリングまで。ご不明点はお気軽にご相談ください。</p></div>';
   body.innerHTML = html;
+  // 静的地図を非同期生成して各会場にはめ込み（提案ページ・PPTX共通の地図）
+  dets.forEach(async d=>{
+    if(!d.mapEmbed) return;
+    const mi = await ensureMapImg(d);
+    const el = document.getElementById("vmap-"+d.id);
+    if(el){ if(mi) el.innerHTML='<img class="mapimg" src="'+mi+'" alt="地図">'; else el.remove(); }
+  });
 }
 function comparisonHTML(dets){
   const maxCapBest = Math.max(...dets.map(d=>d.maxCap||0));
@@ -1164,19 +1255,23 @@ function comparisonHTML(dets){
     '</tbody></table></div></div>';
 }
 function venueBlockHTML(d, i){
-  const chosen = roomsToShow(d);
-  const subset = chosen.length && chosen.length !== d.rooms.length;
-  const cols = LAYOUT_ORDER.filter(l => chosen.some(r => (r.caps[l]||0)>0)).slice(0,4);
-  const rooms = chosen.slice(0,8);
+  const sel = state.selected.get(d.id);
+  const isOn = name => !sel || !sel.rooms || sel.rooms.size===0 || sel.rooms.has(name);
+  const chosenCount = d.rooms.filter(r=>isOn(r.name)).length;
+  const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => isOn(r.name) && (r.caps[l]||0)>0)).slice(0,4);
   const photos = d.images.slice(1,5);
-  const mapOk = d.mapEmbed && /^https:\/\/www\.google\.com\/maps\/embed/.test(d.mapEmbed);
-  const table = chosen.length ? (
-    '<div class="roomcap">'+(subset?'ご希望の '+chosen.length+' 室':'会議室 '+chosen.length+' 室')+'</div>'+
-    '<div class="rooms-wrap"><table class="rooms"><thead><tr><th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
-      rooms.map(r=>'<tr><td class="nm">'+esc(r.name)+'</td><td>'+(r.area?esc(r.area)+"㎡":"—")+'</td>'+cols.map(c=>'<td>'+((r.caps[c]||0)?esc(r.caps[c])+"名":"—")+'</td>').join("")+'<td class="pr">'+esc(roomPrice(r))+'</td></tr>').join("")+
-      (chosen.length>8?'<tr><td colspan="'+(cols.length+3)+'" style="text-align:center;color:var(--ink-faint)">ほか '+(chosen.length-8)+' 室</td></tr>':'')+
-    '</tbody></table></div>') : '<p style="color:var(--ink-faint)">会議室情報を取得できませんでした。</p>';
-  return '<div class="venue-block">'+
+  const idJs = esc(d.id).replace(/'/g,"\\'");
+  const rows = d.rooms.slice(0,12);
+  const table = d.rooms.length ? (
+    '<div class="roomcap">'+(chosenCount!==d.rooms.length?"ご希望の "+chosenCount+" 室":"会議室 "+d.rooms.length+" 室")+'<span class="roomedit-hint print-hide"> ・ チェックした部屋が表示／PPTXに反映されます</span></div>'+
+    '<div class="rooms-wrap"><table class="rooms"><thead><tr><th class="print-hide">利用</th><th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
+      rows.map(r=>'<tr class="'+(isOn(r.name)?"":"row-off")+'">'+
+        '<td class="rmchk print-hide"><input type="checkbox" '+(isOn(r.name)?"checked":"")+' data-rn="'+esc(r.name)+'" onchange="toggleRoom(\''+idJs+'\', this.dataset.rn)"></td>'+
+        '<td class="nm">'+esc(r.name)+'</td><td>'+(r.area?esc(r.area)+"㎡":"—")+'</td>'+cols.map(c=>'<td>'+((r.caps[c]||0)?esc(r.caps[c])+"名":"—")+'</td>').join("")+'<td class="pr">'+esc(roomPrice(r))+'</td></tr>').join("")+
+    '</tbody></table></div>'+
+    (d.rooms.length>12?'<div class="roomcap" style="margin-top:6px;color:var(--ink-faint)">ほか '+(d.rooms.length-12)+' 室</div>':'')
+  ) : '<p style="color:var(--ink-faint)">会議室情報を取得できませんでした。</p>';
+  return '<div class="venue-block" id="vblock-'+esc(d.id)+'">'+
     '<div class="vn"><span class="num">'+String(i+1).padStart(2,"0")+'</span><h2>'+esc(d.name)+'</h2></div>'+
     '<div class="vsub">'+esc(d.brand||"")+(d.station?'　｜　▸ '+esc((d.station||"").split("\n")[0]):"")+(d.maxCap?'　｜　最大 '+d.maxCap+'名':"")+'</div>'+
     '<div class="vgrid">'+
@@ -1184,7 +1279,7 @@ function venueBlockHTML(d, i){
         (d.images.length? '<div class="photo"><img src="'+esc(d.images[0]+"?w=760&h=560&fit=crop&fm=webp")+'" alt=""></div>':'<div class="photo"></div>')+
         (photos.length? '<div class="vphotos">'+photos.map(u=>'<img src="'+esc(thumbURL(u,360,240))+'" alt="">').join("")+'</div>':'')+
         (d.address? '<div class="acc" style="margin-top:12px"><div class="addr"><i>▸</i> '+esc(d.address)+'</div>'+d.access.slice(0,2).map(a=>'<div class="acc-line">'+esc(a.replace(/\n/g," / "))+'</div>').join("")+'</div>':'')+
-        (mapOk? '<iframe class="mapf" style="margin-top:10px" loading="lazy" src="'+esc(d.mapEmbed)+'"></iframe>':'')+
+        (d.mapEmbed? '<div class="vmap" id="vmap-'+esc(d.id)+'"></div>':'')+
       '</div>'+
       '<div>'+
         (d.description? '<div class="desc" style="margin-bottom:16px">'+esc(d.description)+'</div>':'')+
@@ -1193,6 +1288,15 @@ function venueBlockHTML(d, i){
       '</div>'+
     '</div>'+
   '</div>';
+}
+function rerenderVenueBlock(id){
+  const idx = custDets.findIndex(d=>d.id===id);
+  if(idx<0) return;
+  const el = document.getElementById("vblock-"+id);
+  if(!el) return;
+  el.outerHTML = venueBlockHTML(custDets[idx], idx);
+  const d = custDets[idx];
+  if(d.mapImg){ const m=document.getElementById("vmap-"+id); if(m) m.innerHTML='<img class="mapimg" src="'+d.mapImg+'" alt="地図">'; }
 }
 
 /* ============================================================
