@@ -362,16 +362,20 @@ const PREF_PATH = {
 const BRANDS = ["PREMIUM","TKP","fabbit","CIRQ","cabin","その他"];
 
 /* ── プロキシ層 ── */
-/* 複数の公開CORSプロキシ。1本が混雑/停止(429等)でも他で取得できるよう
-   2本ずつ並列レース(Promise.any)し、最初に成功したものを採用する */
-const PROXIES = [
+/* プロキシ層。Cloudflare(workers.dev/pages.dev)配下では、同梱の自前Workerプロキシ
+   `/proxy?url=` を最優先（同一オリジン・レート制限なし・最も確実）。
+   それ以外/フォールバックは公開CORSプロキシを2本ずつ並列レース(Promise.any) */
+const HAS_SELF_PROXY = /(^|\.)(workers|pages)\.dev$/i.test(location.hostname);
+const PROXIES = [];
+if(HAS_SELF_PROXY) PROXIES.push(u => "/proxy?url=" + encodeURIComponent(u));
+PROXIES.push(
   u => "https://cors.eu.org/" + u,
   u => "https://api.cors.lol/?url=" + encodeURIComponent(u),
   u => "https://api.allorigins.win/raw?url=" + encodeURIComponent(u),
   u => "https://corsproxy.io/?url=" + encodeURIComponent(u),
   u => "https://api.codetabs.com/v1/proxy/?quest=" + encodeURIComponent(u),
-  u => "https://thingproxy.freeboard.io/fetch/" + u,
-];
+  u => "https://thingproxy.freeboard.io/fetch/" + u
+);
 const TTL = 15*60*1000;
 const memCache = new Map();
 function _fetchProxy(purl, ms){
@@ -394,9 +398,11 @@ async function proxyFetch(url){
     const raw = localStorage.getItem("kk:"+url);
     if(raw){ const o = JSON.parse(raw); if(Date.now()-o.t < TTL){ memCache.set(url,o); return o.html; } }
   }catch(e){}
-  let lastErr;
-  for(let i=0;i<PROXIES.length;i+=2){
-    const group = PROXIES.slice(i,i+2).map(mk=>_fetchProxy(mk(url), 9000));
+  let lastErr, i=0;
+  while(i < PROXIES.length){
+    let group;
+    if(i===0 && HAS_SELF_PROXY){ group=[_fetchProxy(PROXIES[0](url), 13000)]; i=1; }   // 自前プロキシは単独で優先
+    else { group=PROXIES.slice(i,i+2).map(mk=>_fetchProxy(mk(url), 9000)); i+=2; }
     try{
       const html = await Promise.any(group);
       const rec = {t:Date.now(), html};
