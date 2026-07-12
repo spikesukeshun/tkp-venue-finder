@@ -543,9 +543,54 @@ function parseRoomTokens(name, tokens){
   const maxCap = room.caps["最大収容"]||0;
   return (maxCap>0 || room.area>0) ? room : null;
 }
+/* レイアウト名の表記ゆれを LAYOUT_ORDER に正規化 */
+function normLayout(s){ return s==="ロノ字" ? "ロの字" : s; }
+/* 施設ページ埋め込みJSON（Next.js __next_f）から全会議室を取得。
+   レンダリング済みHTML表はアンカー化されない部屋（例: ホール7B）を落とすため、
+   roomName/roomNumber/capacity/area/price/floor を持つJSONを優先的にパースする。 */
+function parseRoomsJSON(txt){
+  if(!txt) return [];
+  const rooms = [], seen = new Set();
+  const roomRe = /\\?"roomName\\?":\\?"([^"\\]+)\\?",\\?"roomNumber\\?":\\?"(\d+)\\?"([\s\S]*?)\\?"floorSort\\?"/g;
+  let m;
+  while((m = roomRe.exec(txt))){
+    const name = m[1], roomId = m[2], body = m[3];
+    if(seen.has(roomId)) continue; seen.add(roomId);
+    const caps = {}; let maxCap = 0;
+    const capRe = /\\?"layoutName\\?":\\?"([^"\\]+)\\?",\\?"capacity\\?":\\?"(\d+)名/g;
+    let cm;
+    while((cm = capRe.exec(body))){
+      const cap = parseInt(cm[2],10);
+      caps[normLayout(cm[1])] = cap;
+      if(cap>maxCap) maxCap = cap;
+    }
+    caps["最大収容"] = maxCap;
+    const areaM = body.match(/\\?"area\\?":([\d.]+)/);
+    const hM    = body.match(/\\?"roomHeight\\?":([\d.]+)/);
+    const minM  = body.match(/\\?"minPrice\\?":(\d+)/);
+    const maxM  = body.match(/\\?"maxPrice\\?":(\d+)/);
+    const flM   = body.match(/\\?"floor\\?":\\?"([^"\\]+)/);
+    const priceMin = minM ? parseInt(minM[1],10) : 0;
+    const priceMax = maxM ? parseInt(maxM[1],10) : 0;
+    rooms.push({
+      name, roomId,
+      floor: flM ? flM[1] : "",
+      area: areaM ? parseFloat(areaM[1]) : 0,
+      ceiling: hM ? parseFloat(hM[1]) : 0,
+      priceMin, priceMax,
+      ask: priceMin<=0,
+      caps
+    });
+  }
+  return rooms;
+}
 function parseRooms(doc){
+  // 1) 埋め込みJSONを優先（全室を確実に取得＋roomIdを直取り）
+  const scripts = [...doc.querySelectorAll("script")].map(s=>s.textContent||"").join("\n");
+  const j = parseRoomsJSON(scripts);
+  if(j.length) return j;
+  // 2) フォールバック: レンダリング済みHTML表を文書順に走査し、各部屋に直前の room_detail id を対応付ける
   const rooms = [];
-  // 部屋名アンカーと room_detail リンクを文書順に走査し、各部屋に直前の room_detail id を対応付ける
   const seq = [...doc.querySelectorAll("a")].filter(a=>{
     const c = a.getAttribute("class")||"", h = a.getAttribute("href")||"";
     return (c.includes("leading-[22px]") && c.includes("[text-decoration:underline]")) || /room_detail\/\d+/.test(h);
@@ -1452,12 +1497,15 @@ async function fetchRoomLayouts(facilityUrl, roomId){
   let out = [];
   try{
     const html = await proxyFetch(facilityUrl.replace(/\/+$/,"") + "/room_detail/" + roomId + "/");
-    const re = /(https:\/\/[^"\\ ]+Layout_[0-9A-Za-z_]+\.(?:webp|jpg|png))\\?"\},\\?"layout_name\\?":\\?"([^"\\]+)/g;
-    const seen = new Set(); let m;
+    // プロジェクター有無はJSONのグループ単位フラグ has_projector（true/false）で決まる。
+    // has_projector と 各図面(Layout_...+layout_name) を文書順に走査し、直前の has_projector を各図面へ付与する。
+    const re = /\\?"has_projector\\?":(true|false)|(https:\/\/[^"\\ ]+Layout_[0-9A-Za-z_]+\.(?:webp|jpg|png))\\?"\},\\?"layout_name\\?":\\?"([^"\\]+)/g;
+    let curProj = false; const seen = new Set(); let m;
     while((m = re.exec(html))){
-      const url = m[1], name = m[2];
+      if(m[1] !== undefined){ curProj = (m[1] === "true"); continue; }
+      const url = m[2], name = m[3];
       if(seen.has(url)) continue; seen.add(url);
-      out.push({url, name, projector:/Layout_694_/.test(url)});
+      out.push({url, name, projector:curProj});
     }
   }catch(e){}
   layoutCache.set(roomId, out);
