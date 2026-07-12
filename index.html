@@ -149,6 +149,16 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
 .rooms tr.row-off td.rmchk{opacity:1}
 .roomedit-hint{font-weight:400;color:var(--ink-faint);letter-spacing:0;font-size:10.5px}
 .onestop-sec .onestop-img{width:100%;display:block;border-radius:var(--radius);border:1px solid var(--line)}
+.laysec{padding:36px 0}
+.laygrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:18px}
+.layitem{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:var(--surface)}
+.layname{font-size:12.5px;font-weight:500;padding:9px 11px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.laysel{border:1px solid var(--line-strong);border-radius:6px;padding:3px 6px;font-size:11.5px;margin-left:auto}
+.laypv{min-height:8px}
+.layimg{width:100%;display:block}
+.cover .meta .mval{font-size:13px;color:var(--ink);padding:2px 0}
+body.readonly .rmchk,body.readonly .roomselall,body.readonly .roomedit-hint,body.readonly .laysel,body.readonly .roomsel-hint{display:none!important}
+@media print{ .laysel{display:none} }
 .rooms{width:100%;border-collapse:collapse;font-size:12.5px}
 .rooms th,.rooms td{padding:9px 10px;text-align:right;border-bottom:1px solid var(--line);white-space:nowrap}
 .rooms th{font-weight:500;color:var(--ink-faint);font-size:10.5px;letter-spacing:.06em;text-align:right;position:sticky}
@@ -251,9 +261,10 @@ input,select{font-family:inherit;font-size:14px;color:var(--ink)}
       <span class="sub">VENUE FINDER ＆ PROPOSAL</span>
     </div>
     <div class="top-actions">
+      <button class="btn ghost hidden" id="custShareBtn" title="顧客に見せる閲覧専用リンク（編集不可）">👤 顧客用リンク</button>
       <button class="btn ghost hidden" id="pptBtn" title="選択内容をPowerPointで出力">📊 PPTX出力</button>
       <button class="btn ghost hidden" id="printBtn" title="提案書としてPDF/印刷">🖨 印刷 / PDF</button>
-      <button class="btn ghost" id="shareBtn" title="この選択を共有URLにする">🔗 共有URL</button>
+      <button class="btn ghost" id="shareBtn" title="社内用: この選択を共有URLにする">🔗 共有URL</button>
       <button class="btn primary" id="modeBtn" disabled>顧客共有モード</button>
     </div>
   </div>
@@ -534,19 +545,25 @@ function parseRoomTokens(name, tokens){
 }
 function parseRooms(doc){
   const rooms = [];
-  const links = [...doc.querySelectorAll("a")].filter(a=>{
-    const c = a.getAttribute("class")||"";
-    return c.includes("leading-[22px]") && c.includes("[text-decoration:underline]");
+  // 部屋名アンカーと room_detail リンクを文書順に走査し、各部屋に直前の room_detail id を対応付ける
+  const seq = [...doc.querySelectorAll("a")].filter(a=>{
+    const c = a.getAttribute("class")||"", h = a.getAttribute("href")||"";
+    return (c.includes("leading-[22px]") && c.includes("[text-decoration:underline]")) || /room_detail\/\d+/.test(h);
   });
-  links.forEach(link=>{
-    const name = link.textContent.trim();
+  let lastRid = null;
+  seq.forEach(a=>{
+    const hm = (a.getAttribute("href")||"").match(/room_detail\/(\d+)/);
+    if(hm) lastRid = hm[1];
+    const c = a.getAttribute("class")||"";
+    if(!(c.includes("leading-[22px]") && c.includes("[text-decoration:underline]"))) return;
+    const name = a.textContent.trim();
     if(!name) return;
-    let row = link, found = false;
+    let row = a, found = false;
     for(let i=0;i<5;i++){ row = row.parentElement; if(!row) break; if((row.getAttribute("class")||"").includes("w-[1000px]")){ found = true; break; } }
     if(!found) return;
     const tokens = nodeText(row,"|").split("|").map(s=>s.trim()).filter(Boolean);
     const room = parseRoomTokens(name, tokens);
-    if(room) rooms.push(room);
+    if(room){ room.roomId = lastRid; rooms.push(room); }
   });
   return rooms;
 }
@@ -891,22 +908,28 @@ function toggleSelect(id){
   else{ ensureSelected(id); }
   render(); syncHash();
 }
-/* 必要な部屋の選択（空Set＝全室、部分選択で subset）。提案ページ・PPTXに反映 */
+/* 必要な部屋の選択（最大MAX_ROOMS室。既定は未選択=0室）。提案ページ・PPTXに反映 */
+const MAX_ROOMS = 6;
 function roomsToShow(det){
   const sel = det && state.selected.get(det.id);
-  if(sel && sel.rooms && sel.rooms.size>0) return det.rooms.filter(r=>sel.rooms.has(r.name));
-  return det ? det.rooms : [];
+  if(sel && sel.rooms) return det.rooms.filter(r=>sel.rooms.has(r.name));
+  return [];
 }
 function toggleRoom(id, roomName){
   const det = detail.get(id);
   if(!det || typeof det!=="object") return;
   const sel = ensureSelected(id);
-  if(sel.rooms.size===0) det.rooms.forEach(r=>sel.rooms.add(r.name));  // 空=全室 → 明示化
-  if(sel.rooms.has(roomName)) sel.rooms.delete(roomName); else sel.rooms.add(roomName);
-  if(sel.rooms.size===det.rooms.length) sel.rooms = new Set();         // 全室は「空=全室」に戻す
-  const cnt = $("#roomSelCount"); if(cnt) cnt.textContent = (sel.rooms.size===0 ? det.rooms.length : sel.rooms.size);
-  const b = $("#mdAddBtn");
-  if(b){ b.className = "btn md-add"; b.textContent = "✓ 選択済み（クリックで会場ごと解除）"; }
+  if(sel.rooms.has(roomName)){ sel.rooms.delete(roomName); }
+  else{
+    if(sel.rooms.size >= MAX_ROOMS){
+      toast("会議室は最大"+MAX_ROOMS+"室まで選択できます");
+      // チェックを戻す
+      document.querySelectorAll('.rooms .rmchk input[data-rn="'+cssEsc(roomName)+'"]').forEach(cb=>cb.checked=false);
+      return;
+    }
+    sel.rooms.add(roomName);
+  }
+  updateRoomSelUI(id, det);
   renderTray();
   if(state.mode==="customer") rerenderVenueBlock(id);
 }
@@ -914,17 +937,23 @@ function selectAllRooms(id, on){
   const det = detail.get(id);
   if(!det || typeof det!=="object") return;
   const sel = ensureSelected(id);
-  sel.rooms = on ? new Set() : new Set(det.rooms.slice(1).map(r=>r.name).length ? [det.rooms[0].name] : det.rooms.map(r=>r.name));
+  sel.rooms = on ? new Set(det.rooms.slice(0, MAX_ROOMS).map(r=>r.name)) : new Set();
+  updateRoomSelUI(id, det);
   renderTray();
   if(state.mode==="customer") rerenderVenueBlock(id);
-  const cnt = $("#roomSelCount"); if(cnt) cnt.textContent = (sel.rooms.size===0? det.rooms.length : sel.rooms.size);
+}
+/* モーダル内チェックボックス／カウンタ／追加ボタンの表示を現在の選択に同期 */
+function updateRoomSelUI(id, det){
+  const sel = ensureSelected(id);
+  const cnt = $("#roomSelCount"); if(cnt) cnt.textContent = sel.rooms.size;
   document.querySelectorAll(".modal .rooms tbody tr").forEach(tr=>{
     const cb = tr.querySelector(".rmchk input"); if(!cb) return;
-    const on2 = sel.rooms.size===0 || sel.rooms.has(cb.dataset.rn);
-    cb.checked = on2; tr.classList.toggle("row-off", !on2);
+    const on = sel.rooms.has(cb.dataset.rn);
+    cb.checked = on; tr.classList.toggle("row-off", !on);
   });
   const b = $("#mdAddBtn"); if(b){ b.className="btn md-add"; b.textContent="✓ 選択済み（クリックで会場ごと解除）"; }
 }
+function cssEsc(s){ return String(s).replace(/["\\]/g,"\\$&"); }
 
 /* ============================================================
    詳細モーダル
@@ -949,12 +978,12 @@ function detailHTML(d){
     '</div>') : "";
   const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => (r.caps[l]||0)>0));
   const selRooms = (state.selected.get(d.id)||{}).rooms;
-  const isRoomOn = name => !selRooms || selRooms.size===0 || selRooms.has(name);
-  const selCount = (!selRooms || selRooms.size===0) ? d.rooms.length : selRooms.size;
+  const isRoomOn = name => !!(selRooms && selRooms.has(name));
+  const selCount = selRooms ? selRooms.size : 0;
   const idJs = esc(d.id).replace(/'/g,"\\'");
   const roomTable = d.rooms.length ? (
-    '<div class="sect"><span class="label">会議室スペック — 利用する部屋を選択（<span id="roomSelCount">'+selCount+'</span> / '+d.rooms.length+'室）</span>'+
-    '<div class="roomsel-hint">チェックした部屋が提案ページ・PPTXに反映されます（既定は全室） <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',true)">全選択</button> <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button></div>'+
+    '<div class="sect"><span class="label">会議室スペック — 利用する部屋を選択（<span id="roomSelCount">'+selCount+'</span> / 最大'+MAX_ROOMS+'室）</span>'+
+    '<div class="roomsel-hint">チェックした部屋（最大'+MAX_ROOMS+'室）が提案ページ・PPTXに反映されます <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',true)">先頭'+MAX_ROOMS+'室</button> <button class="roomselall" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button></div>'+
     '<div class="rooms-wrap"><table class="rooms"><thead><tr>'+
       '<th>利用</th><th>会議室</th><th>階</th><th>面積</th><th>天井</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th>'+
     '</tr></thead><tbody>'+
@@ -1009,21 +1038,32 @@ function enterCustomer(){
   state.mode = "customer";
   $("#browseView").classList.add("hidden");
   $("#customerView").classList.remove("hidden");
-  $("#modeBtn").textContent = "検討モードに戻る";
   $("#printBtn").classList.remove("hidden");
-  $("#pptBtn").classList.remove("hidden");
+  if(state.readonly){
+    document.body.classList.add("readonly");
+    $("#modeBtn").classList.add("hidden");
+    $("#pptBtn").classList.add("hidden");
+    $("#shareBtn").classList.add("hidden");
+    $("#custShareBtn").classList.add("hidden");
+  }else{
+    $("#modeBtn").textContent = "検討モードに戻る";
+    $("#pptBtn").classList.remove("hidden");
+    $("#custShareBtn").classList.remove("hidden");
+  }
   tray.classList.remove("show");
   window.scrollTo(0,0);
   syncHash();
   renderCustomer();
 }
 function exitCustomer(){
+  if(state.readonly) return;
   state.mode = "browse";
   $("#customerView").classList.add("hidden");
   $("#browseView").classList.remove("hidden");
   $("#modeBtn").textContent = "顧客共有モード";
   $("#printBtn").classList.add("hidden");
   $("#pptBtn").classList.add("hidden");
+  $("#custShareBtn").classList.add("hidden");
   syncHash(); render();
 }
 
@@ -1212,14 +1252,36 @@ async function exportPPTX(){
       s.addText("会議室スペック"+(chosen.length!==d.rooms.length?"（ご希望の "+chosen.length+" 室）":"（"+d.rooms.length+" 室）"),{x:rx,y:ry,w:rw,h:0.3,fontSize:11,color:GOLD,fontFace:BODY,bold:true}); ry+=0.36;
       if(chosen.length){
         const th = ["会議室","面積"].concat(cols).concat(["料金/時"]).map(t=>({text:t,options:{bold:true,color:FAINT,fontSize:9,fontFace:BODY,fill:{color:"F4F2EC"},align:"center",valign:"middle"}}));
-        const bodyRows = chosen.slice(0,7).map(r=>[
+        const bodyRows = chosen.slice(0,MAX_ROOMS).map(r=>[
           {text:r.name,options:{color:INK,fontSize:9,fontFace:BODY,bold:true,valign:"middle"}},
           {text:r.area?r.area+"㎡":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}}
         ].concat(cols.map(c=>({text:(r.caps[c]||0)?r.caps[c]+"名":"—",options:{color:GRAY,fontSize:9,fontFace:BODY,align:"center",valign:"middle"}})))
          .concat([{text:roomPrice(r),options:{color:RED,fontSize:9,fontFace:BODY,align:"right",valign:"middle"}}]));
         s.addTable([th].concat(bodyRows),{x:rx,y:ry,w:rw,border:{type:"solid",color:LINE,pt:0.5},autoPage:false});
-        if(chosen.length>7) s.addText("ほか "+(chosen.length-7)+" 室",{x:rx,y:7.0,w:rw,h:0.3,fontSize:9,color:FAINT,fontFace:BODY});
       } else s.addText("会議室情報を取得できませんでした",{x:rx,y:ry,w:rw,h:0.4,fontSize:11,color:FAINT,fontFace:BODY});
+
+      /* レイアウト図面スライド（図面を選択済みの部屋のみ・会場ごと1枚） */
+      const selL = state.selected.get(d.id);
+      const layRooms = (selL && selL.layouts) ? chosen.filter(r=>selL.layouts[r.name]) : [];
+      if(layRooms.length){
+        const ls = pptx.addSlide(); ls.background = {color:BG};
+        ls.addText("LAYOUT",{x:0.62,y:0.4,w:12,h:0.3,fontSize:10,color:GOLD,fontFace:BODY,charSpacing:3});
+        ls.addText(d.name+" — レイアウト図面",{x:0.6,y:0.68,w:12.1,h:0.7,fontSize:22,color:INK,fontFace:HEAD,bold:true});
+        const n=layRooms.length, perRow=(n<=2?Math.max(n,1):3), rowsN=Math.ceil(n/perRow);
+        const gx=0.6, gy=1.75, gw=12.13, gh=5.25, gap=0.3;
+        const cw=(gw-gap*(perRow-1))/perRow, ch=(gh-gap*(rowsN-1))/rowsN;
+        for(let k=0;k<n;k++){
+          const r=layRooms[k], col=k%perRow, rr=Math.floor(k/perRow);
+          const cx=gx+col*(cw+gap), cy=gy+rr*(ch+gap), iw=cw, ih=ch-0.42;
+          ls.addText(r.name,{x:cx,y:cy,w:cw,h:0.3,fontSize:11,color:INK,fontFace:BODY,bold:true});
+          const img = await imgToDataURLSized(selL.layouts[r.name]);
+          if(img && img.w && img.h){
+            let dw=iw, dh=iw*img.h/img.w;
+            if(dh>ih){ dh=ih; dw=ih*img.w/img.h; }
+            ls.addImage({data:img.data,x:cx+(iw-dw)/2,y:cy+0.38,w:dw,h:dh});
+          } else ls.addShape(pptx.ShapeType.rect,{x:cx,y:cy+0.38,w:iw,h:ih,fill:{color:"F0EEE7"}});
+        }
+      }
     }
 
     /* ── ワンストップサービス（提案フォルダのスライドを画像として組込・明るい背景）── */
@@ -1262,23 +1324,33 @@ async function renderCustomer(){
   const sel = [...state.selected.values()];
   if(!sel.length){ box.innerHTML = ""; return; }
   const today = state.pdate || new Date().toLocaleDateString("ja-JP",{year:"numeric",month:"long",day:"numeric"});
-  // cover
-  box.innerHTML =
-    '<div class="cover">'+
-      '<div class="ey">TKP  Meeting Room  Proposal</div>'+
-      '<h1>会議室 ご提案</h1>'+
-      '<div class="to"><input id="cClient" placeholder="〇〇株式会社 御中" value="'+esc(state.client)+'"></div>'+
+  // cover（顧客閲覧モードでは入力欄をテキスト表示に）
+  const ro = state.readonly;
+  const coverInner = ro
+    ? '<div class="to">'+esc(state.client||"〇〇株式会社 御中")+'</div>'+
+      '<div class="meta">'+
+        '<div><span class="label">ご提案日</span><div class="mval">'+esc(today)+'</div></div>'+
+        (state.repName?'<div><span class="label">ご担当</span><div class="mval">'+esc(state.repName)+'</div></div>':'')+
+        (state.repOrg?'<div><span class="label">所属</span><div class="mval">'+esc(state.repOrg)+'</div></div>':'')+
+        (state.repTel?'<div><span class="label">連絡先</span><div class="mval">'+esc(state.repTel)+'</div></div>':'')+
+      '</div>'
+    : '<div class="to"><input id="cClient" placeholder="〇〇株式会社 御中" value="'+esc(state.client)+'"></div>'+
       '<div class="meta">'+
         '<div><span class="label">ご提案日</span><input id="cDate" value="'+esc(today)+'"></div>'+
         '<div><span class="label">ご担当</span><input id="cRep" placeholder="担当者名" value="'+esc(state.repName)+'"></div>'+
         '<div><span class="label">所属</span><input id="cOrg" value="'+esc(state.repOrg)+'"></div>'+
         '<div><span class="label">連絡先</span><input id="cTel" placeholder="TEL / Email" value="'+esc(state.repTel)+'"></div>'+
-      '</div>'+
+      '</div>';
+  box.innerHTML =
+    '<div class="cover">'+
+      '<div class="ey">TKP  Meeting Room  Proposal</div>'+
+      '<h1>会議室 ご提案</h1>'+ coverInner +
     '</div>'+
     '<div id="custBody"><div style="padding:60px;text-align:center;color:var(--ink-faint)"><span class="spin"></span><div style="margin-top:12px">会場情報を準備中…</div></div></div>';
-  // bind inputs
-  const bind = (id,key)=>{ const el=$("#"+id); if(el) el.oninput = ()=>{ state[key]=el.value; syncHash(); }; };
-  bind("cClient","client"); bind("cDate","pdate"); bind("cRep","repName"); bind("cOrg","repOrg"); bind("cTel","repTel");
+  if(!ro){
+    const bind = (id,key)=>{ const el=$("#"+id); if(el) el.oninput = ()=>{ state[key]=el.value; syncHash(); }; };
+    bind("cClient","client"); bind("cDate","pdate"); bind("cRep","repName"); bind("cOrg","repOrg"); bind("cTel","repTel");
+  }
 
   if(custRendering) return; custRendering = true;
   // ensure details
@@ -1306,6 +1378,8 @@ async function renderCustomer(){
     const el = document.getElementById("vmap-"+d.id);
     if(el){ if(mi) el.innerHTML='<img class="mapimg" src="'+mi+'" alt="地図">'; else el.remove(); }
   });
+  // レイアウト図面のselectを非同期で埋める
+  fillLayouts(dets);
 }
 function comparisonHTML(dets){
   const maxCapBest = Math.max(...dets.map(d=>d.maxCap||0));
@@ -1324,21 +1398,23 @@ function comparisonHTML(dets){
 }
 function venueBlockHTML(d, i){
   const sel = state.selected.get(d.id);
-  const isOn = name => !sel || !sel.rooms || sel.rooms.size===0 || sel.rooms.has(name);
+  const ro = state.readonly;
+  const isOn = name => !!(sel && sel.rooms && sel.rooms.has(name));
   const chosenCount = d.rooms.filter(r=>isOn(r.name)).length;
-  const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => isOn(r.name) && (r.caps[l]||0)>0)).slice(0,4);
+  const cols = LAYOUT_ORDER.filter(l => d.rooms.some(r => (r.caps[l]||0)>0)).slice(0,4);
   const photos = d.images.slice(1,5);
   const idJs = esc(d.id).replace(/'/g,"\\'");
-  const rows = d.rooms.slice(0,12);
-  const table = d.rooms.length ? (
-    '<div class="roomcap">'+(chosenCount!==d.rooms.length?"ご希望の "+chosenCount+" 室":"会議室 "+d.rooms.length+" 室")+'<span class="roomedit-hint print-hide"> ・ チェックで表示／PPTX反映</span> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',true)">全選択</button> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button></div>'+
-    '<div class="rooms-wrap"><table class="rooms"><thead><tr><th class="print-hide">利用</th><th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
-      rows.map(r=>'<tr class="'+(isOn(r.name)?"":"row-off")+'">'+
-        '<td class="rmchk print-hide"><input type="checkbox" '+(isOn(r.name)?"checked":"")+' data-rn="'+esc(r.name)+'" onchange="toggleRoom(\''+idJs+'\', this.dataset.rn)"></td>'+
+  const roomList = ro ? d.rooms.filter(r=>isOn(r.name)) : d.rooms;
+  const table = roomList.length ? (
+    '<div class="roomcap">'+(ro? '会議室 '+chosenCount+' 室' : '利用する会議室 <b>'+chosenCount+'</b> / 最大'+MAX_ROOMS+'室<span class="roomedit-hint print-hide"> ・ チェックで選択</span> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',true)">先頭'+MAX_ROOMS+'室</button> <button class="roomselall print-hide" onclick="selectAllRooms(\''+idJs+'\',false)">全解除</button>')+'</div>'+
+    '<div class="rooms-wrap"><table class="rooms"><thead><tr>'+(ro?'':'<th class="print-hide">利用</th>')+'<th>会議室</th><th>面積</th>'+cols.map(c=>'<th>'+esc(c)+'</th>').join("")+'<th>料金/時</th></tr></thead><tbody>'+
+      roomList.map(r=>'<tr class="'+(isOn(r.name)?"":"row-off")+'">'+
+        (ro?'':'<td class="rmchk print-hide"><input type="checkbox" '+(isOn(r.name)?"checked":"")+' data-rn="'+esc(r.name)+'" onchange="toggleRoom(\''+idJs+'\', this.dataset.rn)"></td>')+
         '<td class="nm">'+esc(r.name)+'</td><td>'+(r.area?esc(r.area)+"㎡":"—")+'</td>'+cols.map(c=>'<td>'+((r.caps[c]||0)?esc(r.caps[c])+"名":"—")+'</td>').join("")+'<td class="pr">'+esc(roomPrice(r))+'</td></tr>').join("")+
     '</tbody></table></div>'+
-    (d.rooms.length>12?'<div class="roomcap" style="margin-top:6px;color:var(--ink-faint)">ほか '+(d.rooms.length-12)+' 室</div>':'')
-  ) : '<p style="color:var(--ink-faint)">会議室情報を取得できませんでした。</p>';
+    (!ro && chosenCount===0?'<div class="roomcap print-hide" style="margin-top:6px;color:var(--accent)">↑ 利用する部屋を選択してください（最大'+MAX_ROOMS+'室）</div>':'')
+  ) : '<p style="color:var(--ink-faint)">'+(ro?'':'会議室情報を取得できませんでした。')+'</p>';
+  const layoutSec = layoutSectionHTML(d, ro);
   return '<div class="venue-block" id="vblock-'+esc(d.id)+'">'+
     '<div class="vn"><span class="num">'+String(i+1).padStart(2,"0")+'</span><h2>'+esc(d.name)+'</h2></div>'+
     '<div class="vsub">'+esc(d.brand||"")+(d.station?'　｜　▸ '+esc((d.station||"").split("\n")[0]):"")+(d.maxCap?'　｜　最大 '+d.maxCap+'名':"")+'</div>'+
@@ -1355,6 +1431,7 @@ function venueBlockHTML(d, i){
         table+
       '</div>'+
     '</div>'+
+    layoutSec+
   '</div>';
 }
 function rerenderVenueBlock(id){
@@ -1362,43 +1439,162 @@ function rerenderVenueBlock(id){
   if(idx<0) return;
   const el = document.getElementById("vblock-"+id);
   if(!el) return;
-  el.outerHTML = venueBlockHTML(custDets[idx], idx);
   const d = custDets[idx];
+  el.outerHTML = venueBlockHTML(d, idx);
   if(d.mapImg){ const m=document.getElementById("vmap-"+id); if(m) m.innerHTML='<img class="mapimg" src="'+d.mapImg+'" alt="地図">'; }
+  fillLayouts([d]);
+}
+
+/* ── レイアウト図面（部屋詳細ページから取得） ── */
+const layoutCache = new Map();
+async function fetchRoomLayouts(facilityUrl, roomId){
+  if(layoutCache.has(roomId)) return layoutCache.get(roomId);
+  let out = [];
+  try{
+    const html = await proxyFetch(facilityUrl.replace(/\/+$/,"") + "/room_detail/" + roomId + "/");
+    const re = /(https:\/\/[^"\\ ]+Layout_[0-9A-Za-z_]+\.(?:webp|jpg|png))\\?"\},\\?"layout_name\\?":\\?"([^"\\]+)/g;
+    const seen = new Set(); let m;
+    while((m = re.exec(html))){
+      const url = m[1], name = m[2];
+      if(seen.has(url)) continue; seen.add(url);
+      out.push({url, name, projector:/Layout_694_/.test(url)});
+    }
+  }catch(e){}
+  layoutCache.set(roomId, out);
+  return out;
+}
+function layoutSectionHTML(d, ro){
+  const sel = state.selected.get(d.id);
+  if(!sel || !sel.rooms || sel.rooms.size===0) return "";
+  const chosen = d.rooms.filter(r=>sel.rooms.has(r.name));
+  const idJs = esc(d.id).replace(/'/g,"\\'");
+  const rows = chosen.map(r=>{
+    const ri = d.rooms.indexOf(r);
+    const cur = sel.layouts && sel.layouts[r.name];
+    if(ro){
+      if(!cur) return "";
+      return '<div class="layitem"><div class="layname">'+esc(r.name)+'</div><img class="layimg" src="'+esc(cur)+'" alt="レイアウト図面"></div>';
+    }
+    return '<div class="layitem">'+
+      '<div class="layname">'+esc(r.name)+' <select class="laysel print-hide" id="laysel-'+esc(d.id)+'-'+ri+'" data-rn="'+esc(r.name)+'" onchange="onLayoutSelect(\''+idJs+'\', this.dataset.rn, this.value)"><option value="">図面を読込中…</option></select></div>'+
+      '<div class="laypv" id="laypv-'+esc(d.id)+'-'+ri+'">'+(cur?'<img class="layimg" src="'+esc(cur)+'" alt="レイアウト図面">':'')+'</div>'+
+    '</div>';
+  }).join("");
+  if(ro && !rows.trim()) return "";
+  return '<div class="cust-sec laysec"><span class="label">レイアウト図面</span>'+
+    (ro?'':'<div class="roomsel-hint print-hide" style="margin-bottom:10px">各部屋のレイアウトを選ぶと図面を掲載します（通常／プロジェクター有）。</div>')+
+    '<div class="laygrid">'+rows+'</div></div>';
+}
+async function fillLayouts(dets){
+  for(const d of dets){
+    const sel = state.selected.get(d.id);
+    if(!sel || !sel.rooms || sel.rooms.size===0) continue;
+    const chosen = d.rooms.filter(x=>sel.rooms.has(x.name));
+    await Promise.all(chosen.map(async r=>{
+      const selEl = document.getElementById("laysel-"+d.id+"-"+d.rooms.indexOf(r));
+      if(!selEl) return;   // 読み取りモード等でselectが無い
+      if(!r.roomId){ selEl.innerHTML='<option value="">図面なし</option>'; selEl.disabled=true; return; }
+      let layouts = [];
+      try{ layouts = await fetchRoomLayouts(d.url, r.roomId); }catch(e){}
+      if(!layouts.length){ selEl.innerHTML='<option value="">図面なし</option>'; selEl.disabled=true; return; }
+      const curUrl = sel.layouts && sel.layouts[r.name];
+      selEl.innerHTML = '<option value="">（選択なし）</option>' + layouts.map(L=>{
+        const label = L.name + (L.projector?"（プロジェクター）":"（通常）");
+        return '<option value="'+esc(L.url)+'"'+(curUrl===L.url?" selected":"")+'>'+esc(label)+'</option>';
+      }).join("");
+    }));
+  }
+}
+function onLayoutSelect(id, roomName, url){
+  const sel = ensureSelected(id);
+  if(!sel.layouts) sel.layouts = {};
+  if(url) sel.layouts[roomName] = url; else delete sel.layouts[roomName];
+  const d = custDets.find(x=>x.id===id);
+  const ri = d ? d.rooms.findIndex(r=>r.name===roomName) : -1;
+  const pv = document.getElementById("laypv-"+id+"-"+ri);
+  if(pv) pv.innerHTML = url ? '<img class="layimg" src="'+esc(url)+'" alt="レイアウト図面">' : "";
+  syncHash();
 }
 
 /* ============================================================
    共有URL（ハッシュ）
    ============================================================ */
-function syncHash(){
+/* 選択(会場・部屋・図面)を rl=<id>~<部屋index>[.<Layoutトークン>],… ;… でエンコード */
+function encodeSel(){
+  const parts=[];
+  for(const [id,sel] of state.selected){
+    const d = detail.get(id) || custDets.find(x=>x.id===id);
+    if(!d || !sel.rooms || !sel.rooms.size) continue;
+    const items=[];
+    d.rooms.forEach((r,ri)=>{
+      if(!sel.rooms.has(r.name)) return;
+      let tok="";
+      const lu = sel.layouts && sel.layouts[r.name];
+      if(lu){ const m=lu.match(/Layout_([0-9A-Za-z_]+)\./); if(m) tok="."+m[1]; }
+      items.push(ri+tok);
+    });
+    if(items.length) parts.push(id+"~"+items.join(","));
+  }
+  return parts.join(";");
+}
+function stateParams(){
   const p = new URLSearchParams();
   if(state.pref) p.set("pref", state.pref);
   if(state.sub) p.set("sub", state.sub);
   if(state.selected.size) p.set("ids", [...state.selected.keys()].join(","));
-  if(state.mode==="customer") p.set("mode","customer");
+  const rl = encodeSel(); if(rl) p.set("rl", rl);
   if(state.client) p.set("client", state.client);
+  if(state.pdate) p.set("date", state.pdate);
   if(state.repName) p.set("rep", state.repName);
+  if(state.repOrg) p.set("org", state.repOrg);
+  if(state.repTel) p.set("tel", state.repTel);
+  return p;
+}
+function syncHash(){
+  if(state.readonly) return;             // 顧客閲覧URLは書き換えない
+  const p = stateParams();
+  if(state.mode==="customer") p.set("mode","customer");
   history.replaceState(null,"","#"+p.toString());
 }
 function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),2200); }
-function doShare(){
-  syncHash();
-  const url = location.href;
-  if(navigator.clipboard && navigator.clipboard.writeText){
-    navigator.clipboard.writeText(url).then(()=>toast("共有URLをコピーしました"),()=>prompt("共有URL", url));
-  }else prompt("共有URL", url);
-}
+function copyURL(url,msg){ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(url).then(()=>toast(msg),()=>prompt(msg,url)); } else prompt(msg,url); }
+function doShare(){ syncHash(); copyURL(location.href, "社内用 共有URLをコピーしました"); }
+function custShareURL(){ const p=stateParams(); p.set("mode","customer"); p.set("view","1"); return location.origin+location.pathname+"#"+p.toString(); }
+function doCustShare(){ if(!state.selected.size){ toast("先に会場・部屋を選択してください"); return; } copyURL(custShareURL(), "顧客用リンクをコピーしました"); }
 $("#shareBtn").onclick = doShare;
+$("#custShareBtn").onclick = doCustShare;
 
+/* rl（部屋・図面）を state に適用（詳細取得済み前提） */
+async function applySel(rl){
+  if(!rl) return;
+  for(const seg of rl.split(";")){
+    const [id, items] = seg.split("~");
+    if(!id || !items) continue;
+    const d = detail.get(id); const sel = ensureSelected(id);
+    if(!sel.layouts) sel.layouts = {};
+    for(const it of items.split(",")){
+      const [riStr, tok] = it.split(".");
+      const r = d && d.rooms[parseInt(riStr,10)];
+      if(!r) continue;
+      if(sel.rooms.size < MAX_ROOMS) sel.rooms.add(r.name);
+      if(tok && r.roomId){
+        try{ const layouts = await fetchRoomLayouts(d.url, r.roomId); const L = layouts.find(x=>x.url.includes("Layout_"+tok+".")); if(L) sel.layouts[r.name]=L.url; }catch(e){}
+      }
+    }
+  }
+}
 async function restoreFromHash(){
   const h = location.hash.replace(/^#/,"");
   if(!h) return;
   const p = new URLSearchParams(h);
   if(p.get("client")) state.client = p.get("client");
+  if(p.get("date")) state.pdate = p.get("date");
   if(p.get("rep")) state.repName = p.get("rep");
+  if(p.get("org")) state.repOrg = p.get("org");
+  if(p.get("tel")) state.repTel = p.get("tel");
+  const view = p.get("view")==="1";
   const ids = (p.get("ids")||"").split(",").filter(Boolean);
-  ids.forEach(id=> state.selected.set(id, {id, name:id, url:BASE+"/facilitys/"+id+"/", brand:"その他", station:""}));
-  // pref を復元して一覧取得（会場名を埋めるため）
+  ids.forEach(id=> ensureSelected(id));
   const pref = p.get("pref");
   if(pref && PREF_PATH[pref]){
     const region = REGIONS.find(r=>r[1].includes(pref));
@@ -1407,13 +1603,13 @@ async function restoreFromHash(){
       state.pref = pref; $("#fPref").value = pref;
       if(p.get("sub")) state.sub = p.get("sub");
       await loadArea();
-      // 一覧から選択会場の名前を補完
-      ids.forEach(id=>{ const f = state.results.find(x=>x.id===id); if(f && state.selected.has(id)) state.selected.set(id, {id:f.id,name:f.name,station:f.station,brand:f.brand,url:f.url}); });
+      ids.forEach(id=>{ const f = state.results.find(x=>x.id===id); const s = state.selected.get(id); if(f && s){ s.name=f.name; s.station=f.station; s.brand=f.brand; s.url=f.url; } });
     }
   }
-  // 選択会場の詳細を取得して名前補完
-  for(const id of ids){ try{ const d = await ensureDetail(state.selected.get(id)); const cur = state.selected.get(id); if(cur){ cur.name = d.name||cur.name; cur.brand = d.brand||cur.brand; } }catch(e){} }
-  if(p.get("mode")==="customer" && state.selected.size){ enterCustomer(); }
+  for(const id of ids){ try{ const d = await ensureDetail(state.selected.get(id)); const cur = state.selected.get(id); if(cur){ cur.name = d.name||cur.name; cur.brand = d.brand||cur.brand; cur.url = d.url||cur.url; } }catch(e){} }
+  await applySel(p.get("rl"));
+  if(view){ state.readonly = true; enterCustomer(); }
+  else if(p.get("mode")==="customer" && state.selected.size){ enterCustomer(); }
   else render();
 }
 
